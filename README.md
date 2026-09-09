@@ -63,8 +63,8 @@ Open http://localhost:3001. Leave Supabase variables unset to use practice only;
 4. In **Authentication → Providers**, enable email/password authentication. In **Authentication → Users → Add user**, create the commissioner's email/password user with **Auto Confirm User** selected. This dashboard-created confirmed account can sign in directly; no custom SMTP or email delivery is needed. Do not share the password with spectators. You can disable public sign-ups if only your designated commissioners should create rooms.
 5. Copy Project Settings → API values into `.env.local`:
    - `NEXT_PUBLIC_SUPABASE_URL`: project URL.
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`: public/legacy anon API key.
-   - `SUPABASE_SERVICE_ROLE_KEY`: secret legacy service-role API key, **server only**.
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`: publishable (`sb_publishable_...`) or legacy anon API key.
+   - `SUPABASE_SERVICE_ROLE_KEY`: secret (`sb_secret_...`) or legacy service-role API key, **server only**. The variable name stays the same for either key type.
 6. Restart `npm run dev`, sign in, create a shared room, and share its room URL. A local server URL is accessible only where that server is reachable; use deployment below for remote spectators.
 
 The service-role key bypasses RLS. Only the server uses it, after `auth.getUser(accessToken)` verifies the caller and the room owner is checked. Do not expose it in browser code or use it as a spectator key. Deleting the owner's Supabase Auth account cascades deletion of that user's rooms; export records first.
