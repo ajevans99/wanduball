@@ -1,0 +1,65 @@
+.player-nickname-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.player-nickname-editor input {
+  width: 165px;
+  min-width: 0;
+  padding: 7px 9px;
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--white);
+  border: 1px solid var(--line);
+}
+
+.player-nickname-editor button {
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--white);
+  font-size: 10px;
+}
+
+.player-nickname-editor input::placeholder,
+.nickname-help {
+  color: var(--muted);
+}
+
+.nickname-help {
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+
+.player-name .player-real-name {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.player-name.has-nickname strong {
+  max-width: 260px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.wheel-label span.nickname-wheel-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: none;
+  line-height: 1.2;
+  font-size: clamp(8px, 1.7cqi, 11px);
+}
+
+@media (max-width: 600px) {
+  .wheel-label span.nickname-wheel-label {
+    font-size: 8px;
+  }
+}
+
+.wheel-result h2 {
+  overflow-wrap: anywhere;
+}

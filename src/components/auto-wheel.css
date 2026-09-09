@@ -1,0 +1,33 @@
+.auto-wheel {
+    border-color: light-dark(#b6a0d0, #89739e);
+    background: light-dark(#f5eefc, var(--night-purple));
+}
+.auto-wheel-toggle {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    color: var(--ink);
+    font-weight: 800;
+    cursor: pointer;
+}
+.auto-wheel-toggle input {
+    width: 22px;
+    height: 22px;
+    margin: 0;
+    accent-color: light-dark(#7653bb, #c9abff);
+    cursor: pointer;
+}
+.auto-wheel-toggle span {
+    font-size: 9px;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+}
+.auto-wheel small {
+    display: block;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.6;
+}

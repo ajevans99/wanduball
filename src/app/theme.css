@@ -1,0 +1,121 @@
+:root {
+  color-scheme: light dark;
+  --night-paper: #15121b;
+  --night-surface: #221d2a;
+  --night-soft: #2a2433;
+  --night-ink: #f1edf5;
+  --night-muted: #bcb1c9;
+  --night-line: #483c54;
+  --night-purple: #352742;
+  --night-green: #253522;
+  --night-orange: #3a2b20;
+  --night-pink: #3d2637;
+  --night-blue: #23323c;
+  --night-purple-ink: #d0b4fa;
+  --night-green-ink: #bedf9f;
+  --night-orange-ink: #f0c191;
+  --night-pink-ink: #f1b6d9;
+  --night-blue-ink: #b3dbe9;
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+html {
+  background: var(--paper);
+  scrollbar-color: light-dark(#c5bacd, #665872) transparent;
+}
+
+::selection {
+  background: light-dark(#ddc9fb, #624778);
+  color: light-dark(#26252b, #fff);
+}
+
+.button.dark {
+  background: light-dark(#2e2a35, #c9abff);
+  border-color: light-dark(#2e2a35, #c9abff);
+  color: light-dark(#fff, #21162d);
+  box-shadow: 0 2px 0 light-dark(#17141b, #8866b8);
+}
+.button.dark:hover:not(:disabled) {
+  background: light-dark(#473b59, #dbc8ff);
+}
+.hero h2 span:after {
+  border-bottom-color: light-dark(#b5cf83, #9abc73);
+}
+
+/* These are colorful props, not UI surfaces: retain dark ink on the pastels. */
+.wheel-disc, .wheel-hub, .sticker, .hero-ticket {
+  color: #26252b;
+}
+
+input, select {
+  border-color: light-dark(#ddd5e5, #80708f);
+}
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+  outline-color: light-dark(#7653bb, #dabfff);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.theme-control {
+  position: relative;
+  flex-shrink: 0;
+}
+.theme-picker {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+}
+.theme-picker select {
+  width: auto;
+  min-height: 34px;
+  padding: 7px 5px;
+  font-size: 11px;
+  background: var(--white);
+  color: var(--ink);
+}
+.theme-storage-error {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 210px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--white);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.5;
+  z-index: 40;
+  box-shadow: 0 5px 18px #00000025;
+}
+
+@media (max-width: 1200px) {
+  .topbar-right { gap: 12px; }
+}
+@media (max-width: 650px) {
+  .topbar {
+    flex-wrap: wrap;
+    gap: 8px;
+    height: auto;
+    min-height: 49px;
+    padding-block: 8px;
+  }
+  .breadcrumb { font-size: 0; letter-spacing: 0; }
+  .breadcrumb > span { display: none; }
+  .topbar-right { margin-left: auto; gap: 8px; }
+  .theme-picker { gap: 4px; }
+  .theme-picker select { font-size: 10px; }
+}
