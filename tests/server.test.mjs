@@ -11,6 +11,10 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const require = createRequire(import.meta.url);
 const roomId = "3c1f7a16-8257-41aa-8eaa-c0439f69b2a7";
 const ownerId = "45d04bc0-ee26-41d4-b5d5-f9b14858c53e";
+const memberId = "0d0905d9-0b39-4be5-a2de-5d1a242da281";
+const secondMemberId = "dc184d6b-4508-41ae-a9c3-2c1105da3729";
+const unconfirmedId = "cf5c38b2-46d0-4c91-a2f9-ab1d86851457";
+const missingRoomId = "079507ab-716d-4a06-b193-62f070e70408";
 
 // Reuse the installed TypeScript compiler to exercise the real route modules
 // outside Next, resolving its path alias and server-only build marker in memory.
@@ -64,39 +68,99 @@ function post(body, token = "owner-token") {
   });
 }
 
-function database(context) {
+function accessRequest(token = "owner-token", id = roomId) {
+  return new Request(`http://localhost/api/room/commissioners?room=${id}`, {
+    headers: token ? { authorization: ["Bearer", token].join(" ") } : {},
+  });
+}
+
+function database(context, options = {}) {
   configure(context);
   const load = loader();
   let row = { id: roomId, owner_id: ownerId, state: load("src/lib/seed.ts").initialState(), version: 0 };
+  const members = new Set(options.members ?? []);
+  const users = new Map([
+    [ownerId, { email: "owner@example.com", confirmed: true }],
+    [memberId, { email: "member@example.com", confirmed: true }],
+    [secondMemberId, { email: "second@example.com", confirmed: true }],
+    [unconfirmedId, { email: "pending@example.com", confirmed: false }],
+  ]);
+  const access = actor => ({
+    canEdit: actor === ownerId || members.has(actor),
+    isOwner: actor === ownerId,
+    commissioners: actor === ownerId
+      ? [...members].map(userId => ({ userId, email: users.get(userId).email })).sort((a, b) => a.email.localeCompare(b.email))
+      : [],
+  });
+  const rpcError = (code, status) => Response.json({ code, message: "private database error with account details" }, { status });
   const calls = [];
   mockFetch(context, async (input, init) => {
     const url = new URL(input);
     const method = init?.method ?? "GET";
     calls.push({ url, method, init });
+    if (options.errorFor?.(url.pathname)) return rpcError("XX000", 500);
     if (url.pathname === "/auth/v1/user") {
       const token = new Headers(init.headers).get("authorization");
+      const memberTokens = new Map([["member-token", memberId], ["second-token", secondMemberId]]);
+      const member = memberTokens.get(token?.split(" ")[1]);
+      if (member) return Response.json({ id: member });
       if (token === "Bearer expired-token") {
         return Response.json({ message: "JWT expired" }, { status: 401 });
       }
       return Response.json({ id: token === "Bearer owner-token" ? ownerId : "other-user" });
+    }
+    if (url.pathname.startsWith("/rest/v1/rpc/")) {
+      assert.equal(method, "POST");
+      assert.equal(new Headers(init.headers).get("apikey"), "server-test-key");
+      const body = JSON.parse(init.body);
+      if (body.p_room_id !== roomId) return rpcError("PT404", 404);
+      if (url.pathname.endsWith("/room_commissioner_access")) {
+        return Response.json(access(body.p_user_id));
+      }
+      if (url.pathname.endsWith("/manage_room_commissioner")) {
+        if (body.p_user_id !== ownerId) return rpcError("PT403", 403);
+        if (body.p_action === "add") {
+          const found = [...users].find(([, user]) => user.email === body.p_email);
+          if (!found) return rpcError("PT410", 410);
+          if (!found[1].confirmed) return rpcError("PT422", 422);
+          if (found[0] === ownerId) return rpcError("PT400", 400);
+          members.add(found[0]);
+        } else {
+          assert.equal(body.p_action, "remove");
+          if (body.p_member_user_id === ownerId) return rpcError("PT400", 400);
+          members.delete(body.p_member_user_id);
+        }
+        return Response.json(access(body.p_user_id));
+      }
+      assert.equal(url.pathname, "/rest/v1/rpc/commit_room_command");
+      await options.beforeCommit?.();
+      if (body.p_user_id !== ownerId && !members.has(body.p_user_id)) return rpcError("PT403", 403);
+      if (body.p_expected_version !== row.version) return rpcError("PT409", 409);
+      row = { ...row, state: body.p_new_state, version: row.version + 1 };
+      return Response.json({ state: row.state, version: row.version });
+    }
+    if (url.pathname === "/rest/v1/room_commissioners") {
+      assert.equal(method, "GET");
+      assert.equal(url.searchParams.get("select"), "user_id");
+      assert.equal(url.searchParams.get("room_id"), `eq.${roomId}`);
+      assert.equal(new Headers(init.headers).get("apikey"), "server-test-key");
+      const userId = url.searchParams.get("user_id")?.slice(3);
+      return Response.json(members.has(userId) ? [{ user_id: userId }] : []);
     }
     assert.equal(url.pathname, "/rest/v1/rooms");
     if (method === "POST") {
       row = { id: roomId, ...JSON.parse(init.body) };
       return Response.json(row, { status: 201 });
     }
-    if (method === "PATCH") {
-      assert.equal(url.searchParams.get("id"), `eq.${roomId}`);
-      assert.equal(url.searchParams.get("owner_id"), `eq.${ownerId}`);
-      assert.equal(new Headers(init.headers).get("apikey"), "server-test-key");
-      if (url.searchParams.get("version") !== `eq.${row.version}`) return Response.json([]);
-      row = { ...row, ...JSON.parse(init.body) };
-      return Response.json([row]);
-    }
+    assert.equal(method, "GET", "game updates must use the atomic authorization/CAS RPC");
     // Return snapshots so two commands can read the same version before CAS.
     return Response.json(url.searchParams.get("id") === `eq.${roomId}` ? [row] : []);
   });
-  return { route: load("src/app/api/room/route.ts"), calls, row: () => row };
+  return {
+    route: load("src/app/api/room/route.ts"),
+    commissioners: load("src/app/api/room/commissioners/route.ts"),
+    calls, row: () => row, members,
+  };
 }
 
 test("room create and public read omit auth data; real rooms have no demo players", async context => {
@@ -118,13 +182,14 @@ test("room create and public read omit auth data; real rooms have no demo player
   assert.deepEqual(Object.keys(await read.json()).sort(), ["state", "version"]);
 });
 
-test("room authorization rejects nonowners, missing sessions, and expired sessions", async context => {
+test("room authorization rejects nonmembers, missing sessions, and expired sessions", async context => {
   const db = database(context);
   const command = { type: "command", roomId, version: 0, command: { type: "lock", position: "QB" } };
   assert.equal((await db.route.POST(post(command, "other-token"))).status, 403);
   assert.equal((await db.route.POST(post(command, "expired-token"))).status, 401);
   assert.equal((await db.route.POST(new Request("http://localhost/api/room", { method: "POST" }))).status, 401);
   assert.equal(db.calls.filter(call => call.method === "PATCH").length, 0);
+  assert.equal(db.calls.filter(call => call.url.pathname.endsWith("/commit_room_command")).length, 0);
 });
 
 test("room CAS permits one concurrent command and rejects stale retries", async context => {
@@ -157,6 +222,211 @@ test("unconfigured rooms return 503 without leaking server details", async conte
   const response = await route.GET(new Request(`http://localhost/api/room?room=${roomId}`));
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /not configured/);
+});
+
+test("access GET exposes emails only to the creator and never changes game version", async context => {
+  const db = database(context, { members: [memberId, secondMemberId] });
+  const owner = await db.commissioners.GET(accessRequest());
+  assert.equal(owner.status, 200);
+  assert.equal(owner.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await owner.json(), {
+    canEdit: true, isOwner: true,
+    commissioners: [
+      { userId: memberId, email: "member@example.com" },
+      { userId: secondMemberId, email: "second@example.com" },
+    ],
+  });
+  for (const [token, canEdit] of [["member-token", true], ["other-token", false]]) {
+    const response = await db.commissioners.GET(accessRequest(token));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { canEdit, isOwner: false, commissioners: [] });
+  }
+  const publicResponse = await db.route.GET(new Request(`http://localhost/api/room?room=${roomId}`));
+  assert.deepEqual(Object.keys(await publicResponse.json()).sort(), ["state", "version"]);
+  assert.equal(db.row().version, 0);
+});
+
+test("access GET and management require valid authentication and existing rooms", async context => {
+  const db = database(context);
+  for (const token of [null, "expired-token"]) {
+    assert.equal((await db.commissioners.GET(accessRequest(token))).status, 401);
+  }
+  assert.equal((await db.commissioners.POST(new Request("http://localhost/api/room/commissioners", { method: "POST" }))).status, 401);
+  assert.equal((await db.commissioners.POST(post({ roomId, action: "add", email: "member@example.com" }, "expired-token"))).status, 401);
+  assert.equal((await db.commissioners.GET(accessRequest("owner-token", "invalid"))).status, 400);
+  assert.equal((await db.commissioners.GET(accessRequest("owner-token", missingRoomId))).status, 404);
+  assert.equal((await db.commissioners.POST(post({ roomId: missingRoomId, action: "add", email: "member@example.com" }))).status, 404);
+});
+
+test("owner adds confirmed existing accounts by normalized email; duplicate adds are idempotent", async context => {
+  const db = database(context);
+  for (const email of ["  MEMBER@Example.com  ", "member@example.com"]) {
+    const response = await db.commissioners.POST(post({ roomId, action: "add", email }));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      canEdit: true, isOwner: true,
+      commissioners: [{ userId: memberId, email: "member@example.com" }],
+    });
+  }
+  const managementCalls = db.calls.filter(call => call.url.pathname.endsWith("/manage_room_commissioner"));
+  assert.equal(managementCalls.length, 2);
+  for (const call of managementCalls) {
+    assert.deepEqual(JSON.parse(call.init.body), {
+      p_room_id: roomId, p_user_id: ownerId, p_action: "add",
+      p_email: "member@example.com", p_member_user_id: null,
+    });
+  }
+  assert.equal(db.calls.filter(call => call.url.pathname.startsWith("/auth/v1/admin")).length, 0);
+  assert.equal(db.members.size, 1);
+  assert.equal(db.row().version, 0);
+});
+
+test("strict management validation rejects malformed email, action, ids and extra properties", async context => {
+  const db = database(context);
+  const invalid = [
+    "{",
+    { roomId, action: "add", email: "bad-email" },
+    { roomId, action: "add", email: "" },
+    { roomId, action: "add", email: "a".repeat(255) + "@example.com" },
+    { roomId, action: "add", email: "member@example.com", userId: memberId },
+    { roomId, action: "add", email: "member@example.com", isOwner: true },
+    { roomId, action: "add", email: ["member@example.com"] },
+    { roomId: "invalid", action: "add", email: "member@example.com" },
+    { roomId, action: "remove", userId: "invalid" },
+    { roomId, action: "remove", userId: memberId, email: "member@example.com" },
+    { roomId, action: "invite", email: "member@example.com" },
+  ];
+  for (const body of invalid) {
+    assert.equal((await db.commissioners.POST(post(body))).status, 400, JSON.stringify(body));
+  }
+  assert.equal(db.calls.filter(call => call.url.pathname.startsWith("/rest/")).length, 0);
+});
+
+test("management rejects unknown and unconfirmed accounts without exposing database errors", async context => {
+  const db = database(context);
+  for (const [email, status, message] of [
+    ["unknown@example.com", 404, /sign up.*confirm/],
+    ["pending@example.com", 422, /confirmed/],
+  ]) {
+    const response = await db.commissioners.POST(post({ roomId, action: "add", email }));
+    assert.equal(response.status, status);
+    const body = await response.json();
+    assert.match(body.error, message);
+    assert.doesNotMatch(body.error, /private database/);
+  }
+  assert.equal(db.members.size, 0);
+});
+
+test("only the creator manages membership, and their permanent access cannot be removed", async context => {
+  const db = database(context, { members: [memberId] });
+  for (const token of ["member-token", "other-token"]) {
+    for (const body of [
+      { roomId, action: "add", email: "second@example.com" },
+      { roomId, action: "add", email: "unknown@example.com" },
+      { roomId, action: "remove", userId: memberId },
+    ]) {
+      const response = await db.commissioners.POST(post(body, token));
+      assert.equal(response.status, 403);
+      assert.deepEqual(await response.json(), { error: "Only the room creator can manage commissioner access." });
+    }
+  }
+  assert.equal((await db.commissioners.POST(post({ roomId, action: "remove", userId: ownerId }))).status, 400);
+  assert.equal((await db.commissioners.POST(post({ roomId, action: "add", email: "owner@example.com" }))).status, 400);
+  assert.deepEqual([...db.members], [memberId]);
+  assert.equal(db.row().owner_id, ownerId);
+  assert.equal(db.row().version, 0);
+});
+
+test("co-commissioners can issue commands, but removed members immediately lose access", async context => {
+  const db = database(context, { members: [memberId] });
+  const body = { type: "command", roomId, version: 0, command: { type: "lock", position: "QB" } };
+  const response = await db.route.POST(post(body, "member-token"));
+  assert.equal(response.status, 200);
+  assert.equal(db.row().version, 1);
+  assert.deepEqual(db.row().state.locked, ["QB"]);
+  for (let i = 0; i < 2; i++) {
+    const removed = await db.commissioners.POST(post({ roomId, action: "remove", userId: memberId }));
+    assert.equal(removed.status, 200);
+    assert.deepEqual(await removed.json(), { canEdit: true, isOwner: true, commissioners: [] });
+  }
+  assert.equal(db.row().version, 1, "private membership edits do not increment game version");
+  assert.deepEqual(await (await db.commissioners.GET(accessRequest("member-token"))).json(), {
+    canEdit: false, isOwner: false, commissioners: [],
+  });
+  assert.equal((await db.route.POST(post({ ...body, version: 1 }, "member-token"))).status, 403);
+  const commits = db.calls.filter(call => call.url.pathname.endsWith("/commit_room_command"));
+  assert.equal(commits.length, 1);
+  assert.equal(JSON.parse(commits[0].init.body).p_user_id, memberId);
+});
+
+test("revocation after preliminary access checks prevents the pending command commit", async context => {
+  let db;
+  db = database(context, {
+    members: [memberId],
+    beforeCommit: async () => {
+      const removed = await db.commissioners.POST(post({ roomId, action: "remove", userId: memberId }));
+      assert.equal(removed.status, 200);
+    },
+  });
+  const response = await db.route.POST(post({
+    type: "command", roomId, version: 0, command: { type: "lock", position: "QB" },
+  }, "member-token"));
+  assert.equal(response.status, 403);
+  assert.match((await response.json()).error, /no longer have permission/);
+  assert.equal(db.row().version, 0);
+  assert.deepEqual(db.row().state.locked, []);
+  assert.equal(db.calls.filter(call => call.url.pathname.endsWith("/commit_room_command")).length, 1);
+});
+
+test("CAS permits exactly one command across different commissioners", async context => {
+  const db = database(context, { members: [memberId, secondMemberId] });
+  const responses = await Promise.all(["member-token", "second-token"].map((token, index) =>
+    db.route.POST(post({
+      type: "command", roomId, version: 0, command: { type: "lock", position: index ? "RB" : "QB" },
+    }, token)),
+  ));
+  assert.deepEqual(responses.map(response => response.status).sort(), [200, 409]);
+  assert.equal(db.row().version, 1);
+  assert.equal(db.row().state.locked.length, 1);
+  const commits = db.calls.filter(call => call.url.pathname.endsWith("/commit_room_command"));
+  assert.equal(commits.length, 2);
+  assert.deepEqual(new Set(commits.map(call => JSON.parse(call.init.body).p_user_id)), new Set([memberId, secondMemberId]));
+});
+
+test("storage and RPC failures are safe 503s rather than leaked database details", async context => {
+  const db = database(context, { members: [memberId], errorFor: pathname => pathname.includes("/rpc/") });
+  for (const response of [
+    await db.commissioners.GET(accessRequest()),
+    await db.commissioners.POST(post({ roomId, action: "add", email: "member@example.com" })),
+    await db.route.POST(post({ type: "command", roomId, version: 0, command: { type: "lock", position: "QB" } })),
+  ]) {
+    assert.equal(response.status, 503);
+    assert.doesNotMatch(JSON.stringify(await response.json()), /private database|account details/);
+  }
+  assert.equal(db.row().version, 0);
+});
+
+test("membership lookup failures fail closed before calculating a command", async context => {
+  const db = database(context, {
+    members: [memberId], errorFor: pathname => pathname === "/rest/v1/room_commissioners",
+  });
+  const response = await db.route.POST(post({
+    type: "command", roomId, version: 0, command: { type: "lock", position: "QB" },
+  }, "member-token"));
+  assert.equal(response.status, 503);
+  assert.equal(db.calls.filter(call => call.url.pathname.endsWith("/commit_room_command")).length, 0);
+});
+
+test("unconfigured commissioner access returns 503", async context => {
+  const db = database(context);
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  for (const response of [
+    await db.commissioners.GET(accessRequest()),
+    await db.commissioners.POST(post({ roomId, action: "remove", userId: memberId })),
+  ]) {
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /not configured/);
+  }
 });
 
 function sleeper(context, overrides = {}) {

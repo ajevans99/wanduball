@@ -2,7 +2,7 @@
 
 import { useEffect, useEffectEvent, useState } from "react";
 import { autoWheelDelayMs, nextWheel, type WheelCommand } from "@/lib/auto-wheel";
-import { isCurrent, type GameState } from "@/lib/game";
+import { type GameState } from "@/lib/game";
 import "./auto-wheel.css";
 
 type Props = {
@@ -17,21 +17,19 @@ type Props = {
 
 export function AutoWheel(props: Props) {
     const next = nextWheel(props.game);
-    const complete = props.game.changes.some(change => isCurrent(props.game, change));
     let reason = "";
     if (!props.canEdit)
-        reason = "The commissioner operates auto-mode. Spectators just enjoy the damage.";
+        reason = "Commissioner controls only.";
     else if (props.error)
-        reason = "Auto-mode stopped. Resolve the error, then switch it back on.";
+        reason = "Stopped. Fix the error to resume.";
     else if (props.suspended)
-        reason = "Auto-mode stopped while a dialog is open.";
+        reason = "Paused.";
     else if (!next)
-        reason = complete
-            ? props.spinning ? "Finishing the final wheel. Then the paperwork is yours." : "This week's wheels are done. Sleeper changes and cleanup stay manual."
-            : "No eligible wheel. Review and lock your player pools, and check the rulebook.";
+        reason = props.game.locked.length
+            ? props.spinning ? "Last spin. Round 2 is yours." : "Round 1 done. Round 2 is yours."
+            : "Lock a player pool first.";
 
     return <section className="panel auto-wheel">
-        <h3>Let the nonsense drive.</h3>
         {reason || !next
             ? <><label className="auto-wheel-toggle"><input type="checkbox" role="switch" aria-label="Auto-mode" checked={false} disabled /> Auto-mode</label><p role="status">{reason}</p></>
             : <AutoWheelRunner key={`${props.game.season}:${props.game.week}`} {...props} next={next} />}
@@ -48,11 +46,10 @@ function AutoWheelRunner({ game, busy, spinning, next, onSpin }: Props & {
             setEnabled(false);
     }
     return <>
-        <label className="auto-wheel-toggle"><input type="checkbox" role="switch" aria-label="Auto-mode" checked={enabled} onChange={event => setEnabled(event.target.checked)} /> Auto-mode <span>{enabled ? "CHAOS CRUISE CONTROL" : "YOU'RE DRIVING"}</span></label>
+        <label className="auto-wheel-toggle"><input type="checkbox" role="switch" aria-label="Auto-mode" checked={enabled} onChange={event => setEnabled(event.target.checked)} /> Auto-mode</label>
         {enabled && !busy && !spinning
             ? <AutoCountdown key={stepKey} label={next.label} onComplete={advance} />
-            : <p role="status">{enabled ? "Letting this result land. The next wheel follows automatically." : "A 3-second breather between wheels. All locked pools, then coin, rule, points."}</p>}
-        <small>Off cancels the next spin, not the one already rolling. Leaving this room or reloading switches auto-mode off.</small>
+            : <p role="status">{enabled ? "Spinning..." : "Players only. 3 seconds between spins."}</p>}
     </>;
 }
 

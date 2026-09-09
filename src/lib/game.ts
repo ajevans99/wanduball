@@ -55,6 +55,7 @@ export const stateSchema = z.object({
     lastSpin: z.object({
         id: z.string(), label: z.string(), detail: z.string(),
         startedAt: z.number(), index: z.number().int(), options: z.array(z.string()),
+        sliceLabels: z.array(z.string()).optional(),
     }).nullable(),
     source: z.string(),
 });
@@ -157,6 +158,7 @@ export function transition(state: GameState, command: Command, random: (max: num
                 throw new Error("All players in this position have a home. Unfortunately.");
             const manager = managers[random(managers.length)];
             const player = players[spin(players.map(p => playerLabel(p, s.nicknames?.[p.id])), `${manager.name} gets a ${command.position}. No refunds.`, assignmentLeadInMs)];
+            s.lastSpin!.sliceLabels = players.map(p => s.nicknames?.[p.id] ?? p.name);
             const nickname = s.nicknames?.[player.id];
             s.assignments.push({ id, week: s.week, season: s.season, manager, player, ...(nickname ? { nickname } : {}), applied: false, dropped: false });
             break;

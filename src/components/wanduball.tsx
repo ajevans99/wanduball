@@ -1,6 +1,7 @@
 "use client";
 import { Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Image from "next/image";
 import { ArrowDownToLine, ArrowRight, AudioLines, Check, CheckCheck, ChevronDown, CircleHelp, ClipboardList, Copy, Dices, ExternalLink, History, LayoutDashboard, LoaderCircle, LockKeyhole, LogIn, LogOut, Plus, Radio, RotateCcw, Settings2, ShieldAlert, Sparkles, Trophy, Users, Volume2, VolumeX, X, Zap, } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { commandSchema, currentAssignments, GameState, isCurrent, nicknameMaxLength, Player, playerLabel, pool, pointsWheel, Position, positions, spinDurationMs, stateSchema, transition, type Command } from "@/lib/game";
@@ -10,6 +11,9 @@ import { randomIndex, requestJson, supabase } from "@/lib/browser";
 import { ThemePicker } from "@/components/theme-picker";
 import { PlayerNicknameEditor } from "@/components/player-nickname-editor";
 import { AutoWheel } from "@/components/auto-wheel";
+import { RoomCommissioners } from "@/components/room-commissioners";
+import { useRoomAccess } from "@/components/use-room-access";
+import "./wheel-style.css";
 type Tab = "clubhouse" | "setup" | "arena" | "assignments" | "rules" | "history";
 type Room = {
     state: GameState;
@@ -30,17 +34,11 @@ const menu: {
     { tab: "history", label: "The evidence locker", icon: History },
 ];
 const signed = (n: number) => `${n > 0 ? "+" : ""}${n}`;
-function Football({ small = false }: {
-    small?: boolean;
-}) {
-    return <div className={`football-mascot ${small ? "small" : ""}`} aria-hidden="true">
-    <div className="mascot-halo">★</div><div className="ball-body">
-      <div className="ball-stripe left"/><div className="ball-stripe right"/>
-      <div className="ball-eyes"><i /><i /></div><div className="ball-mouth"/>
-      <div className="ball-laces">╋╋╋</div>
-    </div><div className="ball-leg left"/><div className="ball-leg right"/>
-    {!small && <><div className="mascot-spark one">✦</div><div className="mascot-spark two">✳</div><div className="mascot-orbit">100% skill issue</div></>}
-  </div>;
+function Football() {
+    return <figure className="wandu-mascot">
+        <Image src="/wanduball-mascot.jpg" alt="Wanduball mascot: a fish with a cigarette wearing high-top sneakers" width={750} height={1000} sizes="(max-width: 650px) 230px, 300px" preload />
+        <figcaption>THE PROCESS HAS A SUPERVISOR.</figcaption>
+    </figure>;
 }
 function Pill({ children, tone = "" }: {
     children: React.ReactNode;
@@ -90,13 +88,13 @@ function Game({ roomId }: {
     const [error, setError] = useState(initial.error || (roomId && !supabase ? "This live room needs Supabase configuration. Open the site without ?room= to use practice mode." : ""));
     const [version, setVersion] = useState(0);
     const [session, setSession] = useState<Session | null>(null);
-    const [ownerId, setOwnerId] = useState<string | null>(null);
+    const { access, refreshAccess, changeCommissioner } = useRoomAccess(roomId, session, setError);
     const [connected, setConnected] = useState(false);
     const [settings, setSettings] = useState(false);
     const [help, setHelp] = useState(false);
     const [muted, setMuted] = useState(true);
     const [now, setNow] = useState(Date.now);
-    const [leagueId, setLeagueId] = useState("");
+    const [leagueId, setLeagueId] = useState(initial.state.leagueId || "1389331555339468800");
     const [statsSeason, setStatsSeason] = useState(2025);
     const [newRule, setNewRule] = useState("");
     const [newDuration, setNewDuration] = useState<"Weekly" | "Permanent">("Weekly");
@@ -108,7 +106,7 @@ function Game({ roomId }: {
     const audioRef = useRef<AudioContext | null>(null);
     const [importSeason, setImportSeason] = useState(2026);
     const [importWeek, setImportWeek] = useState(1);
-    const canEdit = ready && !storageBlocked && (!roomId || Boolean(session && session.user.id === ownerId));
+    const canEdit = ready && !storageBlocked && (!roomId || Boolean(session && access?.canEdit));
     const spinning = Boolean(game.lastSpin && now < game.lastSpin.startedAt + spinDurationMs);
     const spinAssignment = game.assignments.find(a => a.id === game.lastSpin?.id);
     const countdown = spinning && game.lastSpin ? Math.max(0, Math.ceil((game.lastSpin.startedAt - now) / 1000)) : 0;
@@ -197,10 +195,6 @@ function Game({ roomId }: {
                 if (disposed)
                     return;
                 acceptRoom(data);
-                const { data: row, error } = await supabase!.from("rooms").select("owner_id").eq("id", roomId).single();
-                if (error)
-                    throw error;
-                setOwnerId(row.owner_id);
                 setReady(true);
             }
             catch (error) {
@@ -272,6 +266,7 @@ function Game({ roomId }: {
         catch (error) {
             setError(error instanceof Error ? error.message : "Something went wrong. Your action was not confirmed.");
             if (roomId) {
+                void refreshAccess();
                 try {
                     acceptRoom(await requestJson<Room>(`/api/room?room=${encodeURIComponent(roomId)}`));
                 }
@@ -372,16 +367,18 @@ function Game({ roomId }: {
       <nav aria-label="Main navigation">{menu.map(({ tab: id, label, icon: Icon }) => <button key={id} aria-label={label} onClick={() => setTab(id)} className={tab === id ? "nav-item active" : "nav-item"} aria-current={tab === id ? "page" : undefined}>
           <Icon size={19}/><span>{label}</span>{id === "arena" && <span className="nav-live">LIVE</span>}
         </button>)}</nav>
-      <div className="sidebar-bottom"><div className="commissioner-note"><span>✳</span><strong>Trust the process.<br />The process is a wheel.</strong><p>Not responsible for your group chat.</p></div>
+      <div className="sidebar-bottom"><div className="commissioner-note"><span>✳</span><strong>The pocess is a wheel.</strong><p>Not responsible for your group chat.</p></div>
         <button className="nav-item" onClick={() => setHelp(true)}><CircleHelp size={18}/>What is happening?</button>
         <button className="profile" onClick={() => setSettings(true)}><span className="avatar purple">{session ? session.user.email?.slice(0, 1).toUpperCase() : "C"}</span><span><strong>{roomId ? canEdit ? "Commissioner" : "Distinguished spectator" : "Chaos coordinator"}<small>{roomId ? "Shared league room" : "Practice mode"}</small></strong></span><Settings2 size={17}/></button>
       </div>
     </aside>
     <div className="workspace">
-      <header className="topbar"><div className="breadcrumb">THE LEAGUE <span>/</span> <strong>{menu.find(m => m.tab === tab)?.label}</strong></div><div className="topbar-right"><span className="season-tag">{game.season} SEASON</span><span className={`connection ${connected ? "online" : ""}`}><i />{roomId ? connected ? "Live connection" : "Connecting" : "Local practice"}</span><ThemePicker /><button className="icon-button" title={muted ? "Enable sound effects" : "Mute sound effects"} aria-label={muted ? "Enable sound effects" : "Mute sound effects"} onClick={() => { setMuted(!muted); if (muted)
+      <header className="topbar"><div className="breadcrumb">THE LEAGUE <span>/</span> <strong>{menu.find(m => m.tab === tab)?.label}</strong></div><div className="topbar-right"><span className="season-tag">{game.season} SEASON</span><span className={`connection ${connected ? "online" : ""}`}><i />{roomId ? connected ? "Live connection" : "Connecting" : "Local practice"}</span><ThemePicker />
+        <button className="icon-button" title="Room settings" aria-label="Room settings" onClick={() => setSettings(true)}><Settings2 size={18}/></button>
+        <button className="icon-button" title={muted ? "Enable sound effects" : "Mute sound effects"} aria-label={muted ? "Enable sound effects" : "Mute sound effects"} onClick={() => { setMuted(!muted); if (muted)
         playSound(); }}>{muted ? <VolumeX size={18}/> : <Volume2 size={18}/>}</button></div></header>
       <main>
-        <div className="page-heading"><div><div className="eyebrow"><span className="tiny-star">✦</span> A VERY SERIOUS FANTASY FOOTBALL OPERATION</div><h1>{tab === "clubhouse" ? <>Welcome to the <span>nonsense.</span></> : tab === "setup" ? <>Prepare the <span>victims.</span></> : tab === "arena" ? <>Let the wheel <span>cook.</span></> : tab === "assignments" ? <>Department of <span>waiver crimes.</span></> : tab === "rules" ? <>The rules are <span>made up.</span></> : <>Keep the <span>receipts.</span></>}</h1><p>{tab === "clubhouse" ? "Ten managers. Zero dignity. One wheel to ruin them all." : tab === "setup" ? "Review the rankings. Remove the unavailable. Send ten brave souls into the wheel." : tab === "arena" ? "One result. Every screen. Absolutely no appeals." : tab === "assignments" ? "Make the moves in Sleeper. Keep the evidence here." : tab === "rules" ? "League-wide scoring changes, brought to you by profoundly bad ideas." : "A permanent record of temporary lapses in judgment."}</p></div><button className="button light" onClick={share}><Users size={16}/>Invite the degenerates<ArrowRight size={15}/></button></div>
+        <div className="page-heading"><div><div className="eyebrow"><span className="tiny-star">✦</span> A VERY SERIOUS FANTASY FOOTBALL OPERATION</div><h1>{tab === "clubhouse" ? <>Welcome to the <span>nonsense.</span></> : tab === "setup" ? <>Prepare the <span>victims.</span></> : tab === "arena" ? <>Let the wheel <span>cook.</span></> : tab === "assignments" ? <>Department of <span>waiver crimes.</span></> : tab === "rules" ? <>The rules are <span>made up.</span></> : <>Keep the <span>receipts.</span></>}</h1><p>{tab === "clubhouse" ? "Ten managers. Zero ice cream. One KZ wheel." : tab === "setup" ? "Review the rankings. Remove the unavailable. Send ten brave souls into the wheel." : tab === "arena" ? "One result. Every screen. Absolutely no appeals." : tab === "assignments" ? "Make the moves in Sleeper. Keep the evidence here." : tab === "rules" ? "League-wide scoring changes, brought to you by profoundly bad ideas." : "A permanent record of temporary lapses in judgment."}</p></div><button className="button light" onClick={share}><Users size={16}/>Invite the degenerates<ArrowRight size={15}/></button></div>
         {!roomId && <div className="demo-banner"><span><Sparkles size={15}/><strong>Practice playground</strong> · Sample players & fictional points. Nothing here changes Sleeper.</span><button onClick={() => setSettings(true)}>Set up a live room <ArrowRight size={14}/></button></div>}
         {roomId && !canEdit && ready && <div className="demo-banner"><span><Radio size={15}/>Spectator mode. The commissioner controls the wheels; you supply the outrage.</span><button onClick={() => setSettings(true)}>Commissioner sign in</button></div>}
         {!settings && !help && (error || notice) && <div role={error ? "alert" : "status"} className={`notice ${error ? "error" : ""}`}><span>{error || notice}</span><button aria-label="Dismiss message" onClick={() => { setError(""); setNotice(""); }}><X size={17}/></button></div>}
@@ -423,7 +420,7 @@ function Game({ roomId }: {
               </div>
               {spinAssignment && countdown > 0 && <strong className="spin-countdown" aria-hidden="true">{countdown}</strong>}
             </div>
-            <Wheel spin={game.lastSpin} now={now} fallback={selectedPool.map(p => playerLabel(p, game.nicknames?.[p.id]))}/>
+            <Wheel spin={game.lastSpin} now={now} fallback={selectedPool.map(p => playerLabel(p, game.nicknames?.[p.id]))} fallbackLabels={selectedPool.map(p => game.nicknames?.[p.id] ?? p.name)} playerSpin={Boolean(spinAssignment)}/>
             <div className="wheel-result" aria-live="polite">
               <span>{countdown && spinAssignment ? "GET READY. THE WHEEL IS NEXT." : spinning ? "CONSULTING THE FOOTBALL GODS..." : game.lastSpin ? "THE WHEEL HAS SPOKEN" : "YOUR FATE IS BUFFERING"}</span>
               <h2>{spinning ? "Please hold your outrage." : game.lastSpin?.label ?? "It’s probably fine."}</h2>
@@ -487,7 +484,9 @@ function Game({ roomId }: {
     </div>
     {(settings || help) && <div className="modal-overlay" onClick={() => { setSettings(false); setHelp(false); }}><section role="dialog" aria-modal="true" aria-labelledby="modal-title" className="modal" onClick={e => e.stopPropagation()}><button className="modal-close icon-button" autoFocus aria-label="Close dialog" onClick={() => { setSettings(false); setHelp(false); }}><X size={20}/></button>{help ? <><Pill tone="purple">THE ORIENTATION NOBODY ASKED FOR</Pill><h2 id="modal-title">Welcome to organized nonsense.</h2><ol className="help-list"><li><strong>Review the top ten.</strong> Import Sleeper stats, manually exclude injuries/byes, and lock each position you want to assign.</li><li><strong>Relocate some football players.</strong> Every spin pairs a remaining player with a remaining manager, without repeats.</li><li><strong>Ruin everybody&apos;s scoring.</strong> Weekly or permanent? Which rule? How many points? Let three wheels decide.</li><li><strong>Make it real in Sleeper.</strong> This app never changes your league directly. Confirm roster and scoring edits after making them yourself.</li><li><strong>Clean up before waivers.</strong> Drop assigned players, restore weekly scoring, then advance the week.</li></ol></> : <><Pill tone="green">THE BORING PART THAT MAKES THE FUN PART WORK</Pill><h2 id="modal-title">Chaos control center.</h2>{!supabase ? <><p>You&apos;re in local practice mode. Your results are saved in this browser, not shared across devices.</p><div className="setup-note"><strong>To bring the whole league:</strong><p>Connect a Supabase project using the included <code>.env.example</code>, run the SQL migration, and create your commissioner account. Full instructions are in <code>README.md</code>.</p></div></> : session ? <><p>Signed in as <strong>{session.user.email}</strong>.</p>{!roomId && <><p>Create a fresh shared room. Practice results will stay here; the live room begins with an empty player pool.</p><button className="button dark full" disabled={busy} onClick={createRoom}><Radio size={17}/>Create a live room</button></>}{roomId && <button className="button light full" onClick={share}><Copy size={16}/>Copy spectator link</button>}<button className="text-button" onClick={async () => { const { error } = await supabase!.auth.signOut(); if (error)
         setError(error.message); }}><LogOut size={16}/>Sign out</button></> : <><p>Sign in with the commissioner account created in Supabase. Spectators don&apos;t need an account.</p><form className="login-form" onSubmit={async (e) => { e.preventDefault(); const form = new FormData(e.currentTarget); setBusy(true); const { error } = await supabase!.auth.signInWithPassword({ email: String(form.get("email")), password: String(form.get("password")) }); setBusy(false); if (error)
-        setError(error.message); }}><label>Email<input name="email" type="email" required autoComplete="email"/></label><label>Password<input name="password" type="password" required autoComplete="current-password"/></label><button className="button dark" disabled={busy}><LogIn size={17}/>Commissioner sign in</button></form></>}<div className="modal-divider"/><p className="small-print">Live room game data is publicly readable. Do not put private information in manager names or rules. Only the room creator can change results.</p><button className="button light full" onClick={exportLedger}><ArrowDownToLine size={16}/>Download league backup</button>{!roomId && <button className="text-button danger" onClick={() => { if (window.confirm("Reset this browser's practice game? Export a backup first if you want to keep it.")) {
+        setError(error.message); }}><label>Email<input name="email" type="email" required autoComplete="email"/></label><label>Password<input name="password" type="password" required autoComplete="current-password"/></label><button className="button dark" disabled={busy}><LogIn size={17}/>Commissioner sign in</button></form></>}
+        {roomId && session && <RoomCommissioners key={`${roomId}-${session.user.id}`} access={access} onChange={changeCommissioner} />}
+        <div className="modal-divider"/><p className="small-print">Live room game data is publicly readable. Do not put private information in manager names or rules. The room creator and added commissioners can change results. Only the creator manages commissioner access.</p><button className="button light full" onClick={exportLedger}><ArrowDownToLine size={16}/>Download league backup</button>{!roomId && <button className="text-button danger" onClick={() => { if (window.confirm("Reset this browser's practice game? Export a backup first if you want to keep it.")) {
         try {
             const fresh = initialState();
             localStorage.setItem(storageKey, JSON.stringify(fresh));
@@ -543,13 +542,18 @@ function Empty({ title, text }: {
 }) {
     return <div className="empty"><Dices size={32} strokeWidth={1.5}/><h3>{title}</h3><p>{text}</p></div>;
 }
-function Wheel({ spin, now, fallback }: {
+function Wheel({ spin, now, fallback, fallbackLabels, playerSpin }: {
     spin: GameState["lastSpin"];
     now: number;
     fallback: string[];
+    fallbackLabels: string[];
+    playerSpin: boolean;
 }) {
     const ref = useRef<HTMLDivElement>(null);
     const options = spin?.options ?? (fallback.length ? fallback : ["CHAOS", "REGRET", "GLORY", "PAIN", "VIBES", "LUCK"]);
+    // Older saved spins retain full labels; strip only their appended real-name suffix for display.
+    const labels = spin ? spin.sliceLabels ?? (playerSpin ? options.map(name => name.replace(/ \([^()]+\)$/, "")) : options) : fallback.length ? fallbackLabels : options;
+    const landed = Boolean(spin && now >= spin.startedAt + spinDurationMs);
     const segment = 360 / options.length;
     const colors = wheelColors(options.length);
     const gradient = options.map((_, i) => `${colors[i]} ${i * segment}deg ${(i + 1) * segment}deg`).join(", ");
@@ -575,7 +579,18 @@ function Wheel({ spin, now, fallback }: {
     if (spin?.options[0] === "Weekly" && spin.options[1] === "Permanent") {
         return <DurationCoin spin={spin} />;
     }
-    return <div className={`wheel-wrap ${spin && now >= spin.startedAt && now < spin.startedAt + spinDurationMs ? "is-spinning" : ""}`}><div className="wheel-pointer"/><div className="wheel-frame"><div className="wheel-disc" ref={ref} style={{ background: `conic-gradient(${gradient})` }}>{options.map((name, i) => <div className="wheel-label" key={`${i}-${name}`} style={{ transform: `rotate(${(i + 0.5) * segment}deg)` }}><span title={name} className={name.length > 18 ? "nickname-wheel-label" : undefined}>{name}</span></div>)}</div><div className="wheel-hub"><Dices size={34}/><small>TRUST ME</small></div></div><span className="wheel-scribble">seems fair ↗</span></div>;
+    return <div className={`wheel-wrap kz-wheel ${!spin || playerSpin ? "player-wheel" : ""} ${spin && now >= spin.startedAt && now < spin.startedAt + spinDurationMs ? "is-spinning" : ""}`}>
+        <div className="wheel-pointer"/>
+        <div className="wheel-frame">
+            <div className="wheel-disc" ref={ref} style={{ background: `conic-gradient(${gradient})` }}>
+                {options.map((name, i) => <div className={`wheel-label ${landed && spin?.index === i ? "winning-label" : ""}`} key={`${i}-${name}`} style={{ transform: `rotate(${(i + 0.5) * segment}deg)` }}>
+                    <span title={name} aria-label={name}>{(labels[i] ?? name).length > 21 ? `${(labels[i] ?? name).slice(0, 20).trimEnd()}…` : labels[i] ?? name}</span>
+                </div>)}
+            </div>
+            <div className="wheel-hub"><Image src="/wanduball-mascot.jpg" alt="Wanduball mascot" width={750} height={1000} sizes="110px" /><small>KZ APPROVED</small></div>
+        </div>
+        <span className="wheel-scribble">zero ice cream. all destiny. ↗</span>
+    </div>;
 }
 
 function DurationCoin({ spin }: { spin: NonNullable<GameState["lastSpin"]> }) {

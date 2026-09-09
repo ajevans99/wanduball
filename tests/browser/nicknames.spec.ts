@@ -113,7 +113,8 @@ test("locked pools allow naming, spins block it, and result and assignment nickn
   await nicknameInput(page, first.name).fill("The Buffalo");
   await saveNickname(page, first.name);
   await arena(page);
-  await expect(page.locator(".wheel-label").filter({ hasText: "The Buffalo" })).toContainText(first.name);
+  await expect(page.locator(".wheel-label").filter({ hasText: "The Buffalo" })).toHaveText("The Buffalo");
+  await expect(page.locator(".wheel-label span").filter({ hasText: "The Buffalo" })).toHaveAttribute("title", `The Buffalo (${first.name})`);
   await page.clock.pauseAt(new Date(Date.now() + 60_000));
   await page.getByRole("button", { name: "Assign a QB", exact: true }).click();
   const announced = await savedState(page);
@@ -154,8 +155,11 @@ test("nickname inputs do not overflow mobile pages and unavailable shared rooms 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
   await arena(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
-  const longLabel = page.locator(".nickname-wheel-label");
-  await expect(longLabel).toContainText(first.name);
+  const longLabel = page.locator(".wheel-label span").filter({ hasText: "N".repeat(20) });
+  await expect(longLabel).toHaveText(`${"N".repeat(20)}…`);
+  await expect(longLabel).toHaveAttribute("title", `${"N".repeat(nicknameMaxLength)} (${first.name})`);
+  expect(await longLabel.evaluate(label => label.scrollWidth <= label.clientWidth && label.scrollHeight <= label.clientHeight)).toBeTruthy();
+  await page.setViewportSize({ width: 320, height: 780 });
   expect(await longLabel.evaluate(label => label.scrollWidth <= label.clientWidth && label.scrollHeight <= label.clientHeight)).toBeTruthy();
   await page.goto("/?room=3c1f7a16-8257-41aa-8eaa-c0439f69b2a7");
   await setup(page);

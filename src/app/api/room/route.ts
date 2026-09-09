@@ -62,20 +62,32 @@ export async function POST(request: Request) {
       .select("owner_id,state,version").eq("id", body.roomId).maybeSingle();
     if (error) throw new HttpError(503, "Room storage is unavailable. Please try again.");
     if (!data) throw new HttpError(404, "Room not found.");
-    if (data.owner_id !== userId) throw new HttpError(403, "Only this room's commissioner can change it.");
+    if (data.owner_id !== userId) {
+      const access = await database.from("room_commissioners")
+        .select("user_id").eq("room_id", body.roomId).eq("user_id", userId).maybeSingle();
+      if (access.error) throw new HttpError(503, "Room access is unavailable. Please try again.");
+      if (!access.data) throw new HttpError(403, "Only this room's commissioners can change it.");
+    }
     const current = rowSchema.parse(data);
     if (current.version !== body.version) throw new HttpError(409, "The room changed. Refresh it before trying again.");
 
     let state;
     try {
-      state = transition(current.state, body.command, randomInt);
+      state = stateSchema.parse(transition(current.state, body.command, randomInt));
     } catch (error) {
       throw new HttpError(422, error instanceof Error ? error.message : "That command is not allowed.");
     }
-    const result = await database.from("rooms")
-      .update({ state, version: current.version + 1 })
-      .eq("id", body.roomId).eq("owner_id", userId).eq("version", current.version)
-      .select("state,version").maybeSingle();
+    // The database locks the room and rechecks access and CAS together, so a
+    // commissioner removed after the preliminary read cannot commit this state.
+    const result = await database.rpc("commit_room_command", {
+      p_room_id: body.roomId,
+      p_user_id: userId,
+      p_expected_version: current.version,
+      p_new_state: state,
+    });
+    if (result.error?.code === "PT403") throw new HttpError(403, "You no longer have permission to change this room.");
+    if (result.error?.code === "PT404") throw new HttpError(404, "Room not found.");
+    if (result.error?.code === "PT409") throw new HttpError(409, "Another command won the race. Refresh the room before trying again.");
     if (result.error) throw new HttpError(503, "Could not save the room. Refresh before retrying.");
     if (!result.data) throw new HttpError(409, "Another command won the race. Refresh the room before trying again.");
     return json(rowSchema.parse(result.data));

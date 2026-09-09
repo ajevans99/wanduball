@@ -46,20 +46,6 @@
   overflow-wrap: anywhere;
 }
 
-.wheel-label span.nickname-wheel-label {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  max-width: none;
-  line-height: 1.2;
-  font-size: clamp(8px, 1.7cqi, 11px);
-}
-
-@media (max-width: 600px) {
-  .wheel-label span.nickname-wheel-label {
-    font-size: 8px;
-  }
-}
-
 .wheel-result h2 {
   overflow-wrap: anywhere;
 }

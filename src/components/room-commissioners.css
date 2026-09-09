@@ -1,0 +1,36 @@
+.room-commissioners {
+    margin-block: 20px;
+    padding-block: 18px;
+    border-block: 1px solid var(--line);
+}
+
+.room-commissioners h3 {
+    margin-bottom: 12px;
+}
+
+.commissioner-list {
+    list-style: none;
+    padding: 0;
+    margin-block: 16px;
+}
+
+.commissioner-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-block: 10px;
+}
+
+.commissioner-list li > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.commissioner-list small {
+    display: block;
+}
+
+.commissioner-list button {
+    flex-shrink: 0;
+}

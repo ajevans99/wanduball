@@ -28,7 +28,7 @@ async function saved(page: Page): Promise<GameState> {
     return page.evaluate(() => JSON.parse(localStorage.getItem("wanduball-practice-v1")!));
 }
 
-test("auto-mode completes remaining locked pools then coin, rule and points, with a result breather", async ({ page }) => {
+test("auto-mode completes locked pools and leaves all of round two manual", async ({ page }) => {
     await openArena(page, preparedWeek(["QB", "RB"], 9));
     const toggle = page.getByRole("switch", { name: "Auto-mode" });
     await expect(toggle).not.toBeChecked();
@@ -46,19 +46,7 @@ test("auto-mode completes remaining locked pools then coin, rule and points, wit
     await expect.poll(async () => (await saved(page)).assignments.length).toBe(20);
     await expect(page.locator(".progress-label")).toContainText("RB assignment progress");
     await page.clock.fastForward(8200);
-    await expect(page.locator(".auto-wheel")).toContainText("Next: the duration coin in 3");
-    await page.clock.fastForward(3100);
-    await expect.poll(async () => (await saved(page)).pending.duration).not.toBeNull();
-    await page.clock.fastForward(6200);
-    await expect(page.locator(".auto-wheel")).toContainText("Next: the rule wheel in 3");
-    await page.clock.fastForward(3100);
-    await expect.poll(async () => (await saved(page)).pending.ruleId).not.toBeNull();
-    await page.clock.fastForward(6200);
-    await expect(page.locator(".auto-wheel")).toContainText("Next: the points wheel in 3");
-    await page.clock.fastForward(3100);
-    await expect.poll(async () => (await saved(page)).changes.length).toBe(1);
-    await page.clock.fastForward(6200);
-    await expect(page.locator(".auto-wheel")).toContainText("This week's wheels are done");
+    await expect(page.locator(".auto-wheel")).toContainText("Round 1 done. Round 2 is yours.");
     await expect(toggle).not.toBeChecked();
     await expect(toggle).toBeDisabled();
     const complete = await saved(page);
@@ -66,7 +54,18 @@ test("auto-mode completes remaining locked pools then coin, rule and points, wit
     expect(await saved(page)).toEqual(complete);
     expect(complete.week).toBe(1);
     expect(complete.assignments.every(a => !a.applied && !a.dropped)).toBeTruthy();
-    expect(complete.changes[0].applied).toBe(false);
+    expect(complete.changes).toHaveLength(0);
+    expect(complete.pending).toEqual({ duration: null, ruleId: null });
+    await page.getByRole("button", { name: "Flip the duration coin" }).click();
+    await page.clock.fastForward(30_000);
+    expect((await saved(page)).pending.duration).not.toBeNull();
+    expect((await saved(page)).pending.ruleId).toBeNull();
+    await expect(toggle).toBeDisabled();
+    await page.getByRole("button", { name: "Pick the terrible rule" }).click();
+    await page.clock.fastForward(30_000);
+    expect((await saved(page)).pending.ruleId).not.toBeNull();
+    expect((await saved(page)).changes).toHaveLength(0);
+    await expect(toggle).toBeDisabled();
 });
 
 test("switching off cancels the countdown but lets a committed spin finish", async ({ page }) => {
