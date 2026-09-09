@@ -435,7 +435,7 @@ function Game({ roomId }: {
             }} />
             <section className="panel">
               <Pill tone="purple">ROUND 01 · PLAYER ASSIGNMENTS</Pill><h3>Find them a new home.</h3>
-              <p>We announce the manager, count down from 3, then spin for their player. No repeats within a position.</p>
+              <p>Manager first. Player next. No repeats.</p>
               <PositionTabs position={position} setPosition={setPosition} game={game}/>
               <div className="progress-label"><span>{position} assignment progress</span><strong>{currentAssignments(game, position).length}/10</strong></div>
               <div className="progress-track"><i style={{ width: `${currentAssignments(game, position).length * 10}%` }}/></div>
@@ -443,7 +443,7 @@ function Game({ roomId }: {
               {!game.locked.includes(position) && <button className="text-button" onClick={() => setTab("setup")}>Review and lock this pool first <ArrowRight size={14}/></button>}
             </section>
             <section className="panel chaos-controls">
-              <Pill tone="orange">ROUND 02 · EVERYONE&apos;S PROBLEM</Pill><h3>Break the scoring system.</h3><p>Finish every locked player pool first. One scoring change per week.</p>
+              <Pill tone="orange">ROUND 02 · EVERYONE&apos;S PROBLEM</Pill><h3>Break the scoring system.</h3><p>This round is hands-on. Make it count.</p>
               <button className="step-button" disabled={!canEdit || busy || spinning || Boolean(game.pending.duration || latestChange)} onClick={() => void send({ type: "coin" })}><span>1</span><div><strong>Flip the duration coin</strong><small>{game.pending.duration ?? latestChange?.rule.duration ?? "Weekly or permanent?"}</small></div><Dices size={17}/></button>
               <button className="step-button" disabled={!canEdit || busy || spinning || !game.pending.duration || Boolean(game.pending.ruleId)} onClick={() => void send({ type: "rule" })}><span>2</span><div><strong>Pick the terrible rule</strong><small>{game.rules.find(r => r.id === game.pending.ruleId)?.name ?? latestChange?.rule.name ?? "The matching rule wheel"}</small></div><ShieldAlert size={17}/></button>
               <button className="step-button" disabled={!canEdit || busy || spinning || !game.pending.ruleId} onClick={() => void send({ type: "points" })}><span>3</span><div><strong>Make the points worse</strong><small>{latestChange ? `${signed(latestChange.value)} points. Incredible.` : "A replacement value, not a bonus"}</small></div><Zap size={17}/></button>

@@ -46,8 +46,8 @@
 .kz-wheel .wheel-label span {
     top: 7%;
     max-height: 30%;
-    width: max-content;
-    max-width: 3.7em;
+    width: 3.7em;
+    align-content: center;
     writing-mode: vertical-rl;
     white-space: normal;
     overflow-wrap: anywhere;

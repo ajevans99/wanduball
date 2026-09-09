@@ -10,11 +10,11 @@ Finish all ten assignments for every locked position before flipping the duratio
 
 ### Auto-mode
 
-Switch on **Auto-mode** in **The chaos room** to run the next eligible wheel after a three-second countdown. It finishes all locked player pools in QB/RB/WR/TE order, then runs the duration coin, rule wheel, and points wheel. Each result gets a three-second breather after its animation finishes; player assignments still include their manager announcement and countdown.
+Switch on **Auto-mode** in **The chaos room** to finish Round 1's locked player pools in QB/RB/WR/TE order, with three seconds between results. Player assignments keep their manager announcement and countdown. Round 2's duration coin, rule wheel, and points wheel are always manual, including when resuming a partially completed scoring round.
 
 Auto-mode starts off and belongs only to the operating browser tab. Any room commissioner can enable it in shared rooms; every spin uses the same authorized, version-checked command path as a manual click, with results synchronized to spectators. Use one operating tab for auto-mode at a time; competing commands receive a conflict instead of overwriting results. Switching it off cancels the next queued spin without undoing a result already committed. Leaving the chaos room, opening a dialog, reloading, losing editing permission, or encountering an error switches it off. After an error, resolve it and explicitly enable auto-mode again; failed or uncertain commands are never automatically retried.
 
-Auto-mode stops when this week's scoring spin is complete. It never locks pools, imports players, advances the week, confirms cleanup, or changes anything in Sleeper.
+Auto-mode stops after the final player assignment. It never runs Round 2, locks pools, imports players, advances the week, confirms cleanup, or changes anything in Sleeper.
 
 ### Player nicknames
 

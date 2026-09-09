@@ -31,11 +31,28 @@ test("large nickname-only slices preserve full results and reveal the winner onl
     expect(await labels.first().evaluate(el => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(14);
     await expect(page.locator(".wheel-hub img")).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    const straightLabels = await page.addStyleTag({ content: ".wheel-disc, .wheel-label { transform: none !important; }" });
+    for (const width of [320, 390, 1280]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const label of [labels.first(), labels.nth(1)]) {
+            const offset = await label.evaluate(element => {
+                const range = document.createRange();
+                range.selectNodeContents(element);
+                const text = range.getBoundingClientRect();
+                const box = element.getBoundingClientRect();
+                return Math.abs((text.left + text.right - box.left - box.right) / 2);
+            });
+            expect(offset).toBeLessThan(2);
+        }
+    }
+    await straightLabels.evaluate(element => element.remove());
     await page.clock.pauseAt(new Date(Date.now() + 60_000));
     await page.getByRole("button", { name: "Assign a QB", exact: true }).click();
     await expect(page.locator(".winning-label")).toHaveCount(0);
     await page.clock.fastForward(8200);
     await expect(page.locator(".winning-label")).toHaveCount(1);
+    await expect(page.locator(".winning-label span")).toHaveCSS("box-shadow", "none");
+    await expect(page.locator(".winning-label span")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     const result = await page.evaluate(() => JSON.parse(localStorage.getItem("wanduball-practice-v1")!).assignments[0]);
     await expect(page.locator(".winning-label span")).toHaveAttribute("title", `${result.nickname} (${result.player.name})`);
     await expect(page.locator(".wheel-result h2")).toHaveText(`${result.nickname} (${result.player.name})`);
