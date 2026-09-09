@@ -45,7 +45,7 @@ test("large nickname-only slices preserve full results and reveal the winner onl
             expect(offset).toBeLessThan(2);
         }
     }
-    await straightLabels.evaluate(element => element.remove());
+    await straightLabels.evaluate(element => element.parentNode?.removeChild(element));
     await page.clock.pauseAt(new Date(Date.now() + 60_000));
     await page.getByRole("button", { name: "Assign a QB", exact: true }).click();
     await expect(page.locator(".winning-label")).toHaveCount(0);
