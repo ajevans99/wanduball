@@ -17,7 +17,7 @@ test("auto sequence visits only locked pools and never starts round two", () => 
         assert.ok(commands.length <= 20);
         state = transition(state, command, () => 0, now += 10_000);
     }
-    assert.deepEqual(commands, [...Array(10).fill("QB"), ...Array(10).fill("TE")]);
+    assert.deepEqual(commands, [...Array(9).fill("QB"), ...Array(9).fill("TE")]);
     assert.equal(state.changes.length, 0);
     assert.equal(state.assignments.length, 20);
     assert.ok(state.assignments.every(a => !a.applied && !a.dropped));

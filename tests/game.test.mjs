@@ -28,11 +28,11 @@ test("exclusions refill the top ten and locking freezes a pool", () => {
   assert.throws(() => game.run({ type: "exclude", playerId: first.id }), /already locked/);
 });
 
-test("ten spins make ten unique player-manager pairs per position", () => {
+test("nine spins make ten unique player-manager pairs per position", () => {
   const game = coordinator();
   assert.throws(() => game.run({ type: "assign", position: "QB" }), /lock/);
   game.run({ type: "lock", position: "QB" });
-  for (let i = 0; i < 10; i++) game.run({ type: "assign", position: "QB" }, i);
+  for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "QB" }, i);
   const results = currentAssignments(game.state, "QB");
   assert.equal(results.length, 10);
   assert.equal(new Set(results.map(a => a.manager.id)).size, 10);
@@ -49,7 +49,7 @@ test("scoring round enforces assignment completion, order, and replacement point
   assert.throws(() => game.run({ type: "rule" }), /coin first/);
   assert.throws(() => game.run({ type: "points" }), /rule wheel/);
   game.run({ type: "lock", position: "WR" });
-  for (let i = 0; i < 10; i++) game.run({ type: "assign", position: "WR" });
+  for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "WR" });
   game.run({ type: "coin" });
   assert.equal(game.state.pending.duration, "Weekly");
   assert.throws(() => game.run({ type: "lock", position: "RB" }), /scoring round has started/);
@@ -62,10 +62,46 @@ test("scoring round enforces assignment completion, order, and replacement point
   assert.throws(() => game.run({ type: "coin" }), /already started/);
 });
 
+test("last assignment is paired with the ninth spin and preserves nicknames", () => {
+  const game = coordinator();
+  game.run({ type: "lock", position: "QB" });
+  const lastPlayer = pool(game.state, "QB")[9];
+  game.run({ type: "nickname", playerId: lastPlayer.id, nickname: "Mr Irrelevant" });
+  for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "QB" });
+  const last = game.state.assignments[9];
+  assert.equal(last.nickname, "Mr Irrelevant");
+  assert.equal(last.awardedWithSpinId, game.state.lastSpin.id);
+  assert.notEqual(last.id, game.state.lastSpin.id);
+  assert.equal(game.state.lastSpin.options.length, 2);
+  const legacy = structuredClone(game.state);
+  legacy.assignments.pop();
+  const now = legacy.lastSpin.startedAt + spinDurationMs;
+  const completed = transition(legacy, { type: "assign", position: "QB" }, () => {
+    throw new Error("The final assignment must not use RNG");
+  }, now);
+  assert.equal(completed.assignments.length, 10);
+  assert.equal(completed.lastSpin.startedAt + spinDurationMs, now);
+});
+
+test("points layout is shuffled once and the selected slice matches the saved value", () => {
+  const state = initialState();
+  state.pending.duration = "Weekly";
+  state.pending.ruleId = state.rules.find(rule => rule.duration === "Weekly").id;
+  const first = transition(state, { type: "points" }, () => 0);
+  const second = transition(state, { type: "points" }, max => max - 1);
+  assert.notDeepEqual(first.lastSpin.options, second.lastSpin.options);
+  assert.deepEqual([...first.lastSpin.options].sort(), [...second.lastSpin.options].sort());
+  assert.equal(new Set(first.lastSpin.options).size, 15);
+  for (const result of [first, second]) {
+    assert.equal(parseInt(result.lastSpin.options[result.lastSpin.index]), result.changes[0].value);
+    assert.deepEqual(stateSchema.parse(JSON.parse(JSON.stringify(result))).lastSpin, result.lastSpin);
+  }
+});
+
 test("weekly cleanup must be completed before advancing and preserves history", () => {
   const game = coordinator();
   game.run({ type: "lock", position: "TE" });
-  for (let i = 0; i < 10; i++) game.run({ type: "assign", position: "TE" });
+  for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "TE" });
   game.run({ type: "coin" });
   game.run({ type: "rule" });
   game.run({ type: "points" });
@@ -91,7 +127,7 @@ test("weekly cleanup must be completed before advancing and preserves history", 
 test("permanent changes carry forward and cannot be marked reverted", () => {
   const game = coordinator();
   game.run({ type: "lock", position: "QB" });
-  for (let i = 0; i < 10; i++) game.run({ type: "assign", position: "QB" });
+  for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "QB" });
   game.run({ type: "coin" }, 1);
   game.run({ type: "rule" });
   game.run({ type: "points" }, 2);

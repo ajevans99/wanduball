@@ -28,6 +28,7 @@ const assignmentSchema = z.object({
     id: z.string(), week: z.number().int(), season: z.number().int(),
     player: playerSchema, manager: managerSchema,
     nickname: nicknameSchema.min(1).optional(),
+    awardedWithSpinId: z.string().optional(),
     applied: z.boolean(), dropped: z.boolean(),
 });
 const changeSchema = z.object({
@@ -156,11 +157,31 @@ export function transition(state: GameState, command: Command, random: (max: num
             const managers = s.managers.filter(m => !assigned.some(a => a.manager.id === m.id));
             if (!players.length || !managers.length)
                 throw new Error("All players in this position have a home. Unfortunately.");
+            if (players.length === 1 && managers.length === 1) {
+                const player = players[0];
+                const manager = managers[0];
+                const nickname = s.nicknames?.[player.id];
+                s.assignments.push({ id, week: s.week, season: s.season, manager, player, ...(nickname ? { nickname } : {}), applied: false, dropped: false });
+                s.lastSpin = { id, label: playerLabel(player, nickname), detail: `${manager.name} gets the last ${command.position}. No spin needed.`, startedAt: now - spinDurationMs, options: [playerLabel(player, nickname)], index: 0 };
+                break;
+            }
             const manager = managers[random(managers.length)];
             const player = players[spin(players.map(p => playerLabel(p, s.nicknames?.[p.id])), `${manager.name} gets a ${command.position}. No refunds.`, assignmentLeadInMs)];
             s.lastSpin!.sliceLabels = players.map(p => s.nicknames?.[p.id] ?? p.name);
             const nickname = s.nicknames?.[player.id];
             s.assignments.push({ id, week: s.week, season: s.season, manager, player, ...(nickname ? { nickname } : {}), applied: false, dropped: false });
+            if (players.length === 2 && managers.length === 2) {
+                const remainingPlayer = players.find(p => p.id !== player.id)!;
+                const remainingManager = managers.find(m => m.id !== manager.id)!;
+                const remainingNickname = s.nicknames?.[remainingPlayer.id];
+                s.assignments.push({
+                    id: crypto.randomUUID(), awardedWithSpinId: id, week: s.week, season: s.season,
+                    manager: remainingManager, player: remainingPlayer,
+                    ...(remainingNickname ? { nickname: remainingNickname } : {}),
+                    applied: false, dropped: false,
+                });
+                s.lastSpin!.detail += ` ${remainingManager.name} gets ${playerLabel(remainingPlayer, remainingNickname)} by default.`;
+            }
             break;
         }
         case "coin": {
@@ -182,7 +203,15 @@ export function transition(state: GameState, command: Command, random: (max: num
             const rule = s.rules.find(r => r.id === s.pending.ruleId);
             if (!rule)
                 throw new Error("Spin the scoring rule wheel first.");
-            const value = pointsWheel[spin(pointsWheel.map(p => `${p > 0 ? "+" : ""}${p} points`), `${rule.name}. An entirely reasonable scoring decision.`)];
+            const value = pointsWheel[random(pointsWheel.length)];
+            const shuffled = [...pointsWheel];
+            for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = random(i + 1);
+                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
+            const options = shuffled.map(p => `${p > 0 ? "+" : ""}${p} points`);
+            const index = shuffled.indexOf(value);
+            s.lastSpin = { id, label: options[index], detail: `${rule.name}. An entirely reasonable scoring decision.`, options, index, startedAt: now + 1000 };
             const previous = [...s.changes].reverse().find(c => c.rule.id === rule.id && !c.reverted)?.value ?? rule.baseline;
             s.changes.push({ id, week: s.week, season: s.season, rule, previous, value, applied: false, reverted: false });
             s.pending = { duration: null, ruleId: null };

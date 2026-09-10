@@ -110,7 +110,7 @@ function Game({ roomId }: {
     const spinning = Boolean(game.lastSpin && now < game.lastSpin.startedAt + spinDurationMs);
     const spinAssignment = game.assignments.find(a => a.id === game.lastSpin?.id);
     const countdown = spinning && game.lastSpin ? Math.max(0, Math.ceil((game.lastSpin.startedAt - now) / 1000)) : 0;
-    const revealedAssignments = game.assignments.filter(a => !spinning || a.id !== game.lastSpin?.id);
+    const revealedAssignments = game.assignments.filter(a => !spinning || (a.id !== game.lastSpin?.id && a.awardedWithSpinId !== game.lastSpin?.id));
     const activeAssignments = revealedAssignments.filter(a => isCurrent(game, a));
     const latestChange = [...game.changes].reverse().find(c => isCurrent(game, c));
     const selectedPool = pool(game, position);

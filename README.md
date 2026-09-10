@@ -10,6 +10,8 @@ Finish all ten assignments for every locked position before flipping the duratio
 
 ### Auto-mode
 
+Each position takes nine spins: the last remaining player goes to the last manager automatically, revealed alongside pick nine. Points-wheel slices are shuffled for each spin and saved in that order for everyone watching; the odds are unchanged. The rulebook's points list stays numerically sorted.
+
 Switch on **Auto-mode** in **The chaos room** to finish Round 1's locked player pools in QB/RB/WR/TE order, with three seconds between results. Player assignments keep their manager announcement and countdown. Round 2's duration coin, rule wheel, and points wheel are always manual, including when resuming a partially completed scoring round.
 
 Auto-mode starts off and belongs only to the operating browser tab. Any room commissioner can enable it in shared rooms; every spin uses the same authorized, version-checked command path as a manual click, with results synchronized to spectators. Use one operating tab for auto-mode at a time; competing commands receive a conflict instead of overwriting results. Switching it off cancels the next queued spin without undoing a result already committed. Leaving the chaos room, opening a dialog, reloading, losing editing permission, or encountering an error switches it off. After an error, resolve it and explicitly enable auto-mode again; failed or uncertain commands are never automatically retried.

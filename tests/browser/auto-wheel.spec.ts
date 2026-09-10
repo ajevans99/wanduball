@@ -29,19 +29,19 @@ async function saved(page: Page): Promise<GameState> {
 }
 
 test("auto-mode completes locked pools and leaves all of round two manual", async ({ page }) => {
-    await openArena(page, preparedWeek(["QB", "RB"], 9));
+    await openArena(page, preparedWeek(["QB", "RB"], 8));
     const toggle = page.getByRole("switch", { name: "Auto-mode" });
     await expect(toggle).not.toBeChecked();
     await toggle.check();
     await expect(page.locator(".auto-wheel")).toContainText("Next: the QB player wheel in 3");
     await page.clock.fastForward(2900);
-    expect((await saved(page)).assignments).toHaveLength(18);
+    expect((await saved(page)).assignments).toHaveLength(16);
     await page.clock.fastForward(200);
-    await expect.poll(async () => (await saved(page)).assignments.length).toBe(19);
+    await expect.poll(async () => (await saved(page)).assignments.length).toBe(18);
     await expect(page.locator(".spin-countdown")).toHaveText("3");
     await page.clock.fastForward(8200);
     await expect(page.locator(".auto-wheel")).toContainText("Next: the RB player wheel in 3");
-    expect((await saved(page)).assignments).toHaveLength(19);
+    expect((await saved(page)).assignments).toHaveLength(18);
     await page.clock.fastForward(3100);
     await expect.poll(async () => (await saved(page)).assignments.length).toBe(20);
     await expect(page.locator(".progress-label")).toContainText("RB assignment progress");
