@@ -436,7 +436,7 @@ function sleeper(context, overrides = {}) {
     for (let i = 0; i < 35; i++) {
       const id = `${position}-${i}`;
       dictionary[id] = { full_name: `${position} Player ${i}`, position, team: null, injury_status: i === 0 ? "Out" : null };
-      stats[id] = { pts_ppr: 100 - i, pts_half_ppr: 80 - i, pts_std: 60 - i, nullable_stat: null };
+      stats[id] = { rec: i, gp: 1, pts_ppr: 100 - i, pts_half_ppr: 80 - i, pts_std: 60 - i, nullable_stat: null };
     }
   }
   const payloads = {
@@ -447,6 +447,7 @@ function sleeper(context, overrides = {}) {
     "players/nfl": dictionary,
     "stats/nfl/regular/2026/1": stats,
     "stats/nfl/regular/2026/2": stats,
+    "stats/nfl/regular/2026/3": stats,
     "stats/nfl/regular/2025": stats,
     ...overrides,
   };
@@ -467,21 +468,21 @@ function requestSleeper(route, search = query) {
   return route.GET(new Request(`http://localhost/api/sleeper?${search}`));
 }
 
-test("Sleeper sums only completed previous weeks, returns 30 per position and preserves injuries", async context => {
+test("Sleeper requests the exact selected week, returns all candidates and preserves injuries", async context => {
   const service = sleeper(context);
   const response = await requestSleeper(service.route);
   assert.equal(response.status, 200);
   const result = await response.json();
-  assert.equal(result.players.length, 120);
-  assert.equal(result.players[0].points, 200);
+  assert.equal(result.players.length, 140);
+  assert.equal(result.players[0].points, 100);
   assert.equal(result.players[0].injury, "Out");
   assert.equal(result.players[0].team, "FA");
   assert.equal(result.managers.length, 10);
   assert.deepEqual(result.managers[0], { id: "1", name: "Owner 0" });
   assert.deepEqual(result.baselines, { rec: 1, rush_yd: 0.1 });
-  assert.match(result.source, /season-to-date.*before week 3/);
+  assert.match(result.source, /2026 Week 3 actual statistics only.*partial/);
   assert.deepEqual(service.calls.filter(call => call.endpoint.startsWith("stats/")).map(call => call.endpoint).sort(), [
-    "stats/nfl/regular/2026/1", "stats/nfl/regular/2026/2",
+    "stats/nfl/regular/2026/3",
   ]);
   assert.equal(service.calls.find(call => call.endpoint === "players/nfl").init.next.revalidate, 86400);
 });
@@ -499,15 +500,14 @@ test("Sleeper explicit previous-season totals keep game setup season/week distin
   assert.equal(service.calls.filter(call => call.endpoint.startsWith("stats/")).length, 1);
 });
 
-test("Sleeper rejects week-one same-season, future weeks, unsupported league rankings and invalid input", async context => {
+test("Sleeper permits Week 1 actuals, rejects future weeks and stale Week N seasons", async context => {
   const service = sleeper(context);
   let response = await requestSleeper(service.route, query.replace("week=3", "week=1"));
-  assert.equal(response.status, 422);
-  assert.match((await response.json()).error, /statsSeason=2025/);
-  assert.equal(service.calls.length, 0);
+  assert.equal(response.status, 200);
+  assert.match((await response.json()).source, /2026 Week 1 actual/);
   response = await requestSleeper(service.route, query.replace("week=3", "week=4"));
   assert.equal(response.status, 422);
-  assert.equal((await requestSleeper(service.route, query.replace("ranking=ppr", "ranking=league"))).status, 400);
+  assert.equal((await requestSleeper(service.route, query.replace("statsSeason=2026", "statsSeason=2025"))).status, 422);
   assert.equal((await requestSleeper(service.route, query.replace("leagueId=123", "leagueId=not-a-league"))).status, 400);
 });
 
@@ -528,10 +528,10 @@ test("Sleeper rejects missing scoring baselines rather than resetting them to ze
 });
 
 test("Sleeper does not replace missing statistics with zero or demo scores", async context => {
-  const service = sleeper(context, { "stats/nfl/regular/2026/2": {} });
+  const service = sleeper(context, { "stats/nfl/regular/2026/3": {} });
   const response = await requestSleeper(service.route);
   assert.equal(response.status, 422);
-  assert.match((await response.json()).error, /no positive fantasy statistics/);
+  assert.match((await response.json()).error, /no actual fantasy statistics/);
 });
 
 test("Sleeper upstream failure surfaces without fallback", async context => {
@@ -539,4 +539,56 @@ test("Sleeper upstream failure surfaces without fallback", async context => {
   const response = await requestSleeper(service.route);
   assert.equal(response.status, 502);
   assert.match((await response.json()).error, /HTTP 503/);
+});
+
+test("league scoring is the default, includes unrostered, zero and negative candidates without a top-30 cap", async context => {
+  const service = sleeper(context, {
+    "league/123": { league_id: "123", sport: "nfl", season: "2026", total_rosters: 10, scoring_settings: { rec: -1 } },
+  });
+  const response = await requestSleeper(service.route, query.replace("&ranking=ppr", "").replace("week=3", "week=2"));
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.match(result.source, /league scoring.*2026 Week 2 actual.*All roster statuses/);
+  assert.equal(result.players.length, 140);
+  assert.equal(result.players[0].points, 0);
+  assert.equal(result.players[34].points, -34);
+  assert.equal(result.players[34].id, "QB-34");
+  assert.deepEqual(service.calls.filter(call => call.endpoint.startsWith("stats/")).map(call => call.endpoint), ["stats/nfl/regular/2026/2"]);
+});
+
+test("unsupported nonzero league settings fail closed; zero unknown settings are harmless", async context => {
+  const scoring = loader()("src/lib/server/sleeper-scoring.ts");
+  assert.throws(() => scoring.validateScoring({ mystery_bonus: 10 }), /mystery_bonus/);
+  assert.doesNotThrow(() => scoring.validateScoring({ mystery_bonus: 0 }));
+  const service = sleeper(context, {
+    "league/123": { league_id: "123", sport: "nfl", season: "2026", total_rosters: 10, scoring_settings: { mystery_bonus: 10 } },
+  });
+  const response = await requestSleeper(service.route, query.replace("ranking=ppr", "ranking=league"));
+  assert.equal(response.status, 422);
+  assert.match((await response.json()).error, /mystery_bonus.*No approximate/);
+});
+
+test("position bonuses use provider counters once, alongside reception and exclusive distance buckets", () => {
+  const { leaguePoints } = loader()("src/lib/server/sleeper-scoring.ts");
+  // Public 2026 Week 1 McBride counters, retrieved September 16, 2026.
+  const stats = { bonus_rec_te: 9, rec_0_4: 1, rec_td: 1, rec_20_29: 1, rec: 9, rec_5_9: 4, rec_10_19: 3, rec_yd: 95, bonus_fd_te: 5 };
+  const scoring = { bonus_rec_te: 40.9, bonus_rec_rb: 4, bonus_fd_te: 40.9, rec: 2, rec_0_4: 0, rec_5_9: 5, rec_10_19: 10, rec_20_29: 20, rec_td: 6, rec_yd: 0.1 };
+  assert.equal(leaguePoints(stats, scoring, "TE").toFixed(2), "676.10");
+  assert.equal(leaguePoints({ rec: 2, bonus_rec_rb: 2 }, scoring, "RB"), 12);
+  assert.equal(leaguePoints({ rec: 2, bonus_rec_rb: 2, bonus_rec_te: 2, bonus_fd_te: 2 }, scoring, "WR"), 4);
+  assert.equal(leaguePoints({ rec: 2, rec_fd: 1 }, scoring, "TE"), 4, "do not invent missing bonus counters from totals");
+  assert.throws(() => leaguePoints({ rec: null }, scoring, "TE"), /unavailable scoring counter/);
+});
+
+test("live Week 1 quarterback counters reproduce the screenshot including IDP and overlapping long TD bonuses", () => {
+  const { leaguePoints } = loader()("src/lib/server/sleeper-scoring.ts");
+  const settings = { pass_yd: 0.04, pass_td: 6, pass_int: 6, pass_cmp_40p: 40, bonus_pass_yd_400: 40, pass_inc: -0.01, pass_sack: 2.5, rush_yd: 0.1, fum: 6, fum_lost: 6, pass_td_40p: 40, pass_td_50p: -90, idp_tkl: 6, idp_tkl_solo: 60 };
+  // Exact scoring-relevant fields from the public endpoint, not generic PPR.
+  const shough = { pass_yd: 410, pass_td: 3, pass_int: 2, pass_cmp_40p: 2, bonus_pass_yd_400: 1, pass_inc: 21, pass_sack: 5, rush_yd: 8, fum: 2, fum_lost: 1 };
+  const love = { pass_yd: 387, pass_td: 2, pass_int: 1, pass_cmp_40p: 3, pass_inc: 21, pass_sack: 4, fum: 2, fum_lost: 1, pass_td_40p: 1, pass_td_50p: 1, idp_tkl: 1, idp_tkl_solo: 1 };
+  assert.equal(leaguePoints(shough, settings, "QB").toFixed(2), "197.49");
+  assert.equal(leaguePoints(love, settings, "QB").toFixed(2), "197.27");
+  assert.equal(leaguePoints(shough, settings, "QB").toFixed(1), "197.5");
+  assert.equal(leaguePoints(love, settings, "QB").toFixed(1), "197.3");
+  assert.equal(leaguePoints({ bonus_pass_yd_400: 1 }, { bonus_pass_yd_300: 10, bonus_pass_yd_400: 40 }, "QB"), 40);
 });

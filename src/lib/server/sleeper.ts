@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { positions, type Player, type Position } from "../game";
 import { HttpError } from "./http";
+import { leaguePoints, validateScoring } from "./sleeper-scoring";
 
 const text = z.string().nullish();
 const leagueSchema = z.object({
@@ -41,7 +42,7 @@ export const sleeperQuerySchema = z.object({
   season: z.coerce.number().int().min(2020).max(2100),
   week: z.coerce.number().int().min(1).max(18),
   statsSeason: z.coerce.number().int().min(2020).max(2100).optional(),
-  ranking: z.enum(["ppr", "half_ppr", "std", "league"]).default("ppr"),
+  ranking: z.enum(["ppr", "half_ppr", "std", "league"]).default("league"),
 });
 
 async function upstream<T>(path: string, schema: z.ZodType<T>, revalidate = 300): Promise<T> {
@@ -86,12 +87,9 @@ function nflPlayers() {
 export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
   const { leagueId, season, week, ranking } = query;
   const statsSeason = query.statsSeason ?? season;
-  if (ranking === "league") {
-    throw new HttpError(400, "League-scoring rankings are not supported yet. Choose ppr, half_ppr, or std; league scoring baselines are still imported.");
-  }
   if (statsSeason > season) throw new HttpError(400, "The statistics season cannot be later than the selected game season.");
-  if (statsSeason === season && week === 1) {
-    throw new HttpError(422, `Week 1 has no completed weeks for ${season}. Explicitly choose statsSeason=${season - 1} to rank using previous-season totals.`);
+  if (statsSeason < season && week !== 1) {
+    throw new HttpError(422, "Previous-season totals are only an explicit Week 1 fallback. For Week N > 1, use the selected season's Week N actual statistics.");
   }
   const [league, nfl] = await Promise.all([
     upstream(`league/${leagueId}`, leagueSchema),
@@ -103,6 +101,7 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
   if (!league.scoring_settings || !Object.keys(league.scoring_settings).length) {
     throw new HttpError(502, "Sleeper did not return league scoring settings. Retry before importing so scoring baselines are not guessed.");
   }
+  if (ranking === "league") validateScoring(league.scoring_settings);
   const liveSeason = Number(nfl.season);
   if (!Number.isInteger(liveSeason) || !["pre", "regular", "post", "off"].includes(nfl.season_type)) {
     throw new HttpError(502, "Sleeper's current NFL season could not be verified.");
@@ -113,7 +112,7 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
       || (statsSeason === season && !["post", "off"].includes(nfl.season_type)
         && (nfl.season_type !== "regular" || week > nfl.week))
     ))) {
-    throw new HttpError(422, "That ranking period includes unfinished or future NFL weeks. Select a completed period or an earlier statistics season.");
+    throw new HttpError(422, "That ranking period is in the future or unavailable. Select a week with actual NFL statistics; previous-season totals are an explicit Week 1 option only.");
   }
   if (league.total_rosters !== 10) throw new HttpError(422, "Wanduball requires a Sleeper league with exactly 10 teams.");
   const [users, rosters] = await Promise.all([
@@ -134,25 +133,29 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
   const scoreKey = `pts_${ranking}`;
   const paths = statsSeason < season
     ? [`stats/nfl/regular/${statsSeason}`]
-    : Array.from({ length: week - 1 }, (_, i) => `stats/nfl/regular/${statsSeason}/${i + 1}`);
+    : [`stats/nfl/regular/${statsSeason}/${week}`];
   const [dictionary, periods] = await Promise.all([
     nflPlayers(),
     Promise.all(paths.map(path => upstream(path, statsSchema, 3600))),
   ]);
   const totals = new Map<string, number>();
   for (const stats of periods) {
-    if (!Object.values(stats).some(value => (value?.[scoreKey] ?? 0) > 0)) {
-      throw new HttpError(422, "Sleeper has no positive fantasy statistics for at least one requested period. Choose a completed statistics season/week; no synthetic scores were used.");
+    if (!Object.values(stats).some(value => value && (
+      (value.gp ?? 0) > 0 || ["pts_ppr", "pts_half_ppr", "pts_std"].some(key => typeof value[key] === "number")
+    ))) {
+      throw new HttpError(422, "Sleeper has no actual fantasy statistics for the requested period. Choose a week with published results; no synthetic scores were used.");
     }
     for (const [id, values] of Object.entries(stats)) {
-      const points = values?.[scoreKey];
+      const position = dictionary[id]?.position as Position;
+      if (!values || !positions.includes(position)) continue;
+      const points = ranking === "league" ? leaguePoints(values, league.scoring_settings, position) : values[scoreKey];
       if (typeof points === "number") totals.set(id, (totals.get(id) ?? 0) + points);
     }
   }
   const candidates: Player[] = [];
   for (const [id, points] of totals) {
     const player = dictionary[id];
-    if (!player || !positions.includes(player.position as Position) || !Number.isFinite(points) || points <= 0) continue;
+    if (!player || !positions.includes(player.position as Position) || !Number.isFinite(points)) continue;
     const name = player.full_name?.trim() || [player.first_name, player.last_name].filter(Boolean).join(" ").trim();
     if (!name) continue;
     candidates.push({
@@ -162,17 +165,17 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
     });
   }
   const players = positions.flatMap(position => candidates.filter(p => p.position === position)
-    .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)).slice(0, 30));
+    .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)));
   if (positions.some(position => players.filter(player => player.position === position).length < 10)) {
-    throw new HttpError(422, "Sleeper returned fewer than 10 positive-scoring players at one or more positions. Select another completed ranking period.");
+    throw new HttpError(422, "Sleeper returned fewer than 10 players with statistics at one or more positions. Select another ranking period.");
   }
-  const label = { ppr: "PPR", half_ppr: "half-PPR", std: "standard" }[ranking];
+  const label = { ppr: "PPR", half_ppr: "half-PPR", std: "standard", league: "league scoring" }[ranking];
   const period = statsSeason < season
     ? `${statsSeason} previous-season regular-season totals`
-    : `${statsSeason} season-to-date, completed weeks 1–${week - 1} (before week ${week})`;
+    : `${statsSeason} Week ${week} actual statistics only${statsSeason === liveSeason && nfl.season_type === "regular" && week === nfl.week ? " (current week; results may be partial)" : ""}`;
   return {
     players, managers, season, week, leagueId,
-    source: `Sleeper ${label} — ${period}; setup: ${season} week ${week}. Injuries require manual review.`,
+    source: `Sleeper ${label} — ${period}; setup: ${season} week ${week}. All roster statuses; published player statistics. Injuries require manual review.`,
     baselines: league.scoring_settings,
   };
 }
