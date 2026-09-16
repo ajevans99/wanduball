@@ -1,4 +1,4 @@
-import { currentAssignments, isCurrent, pool, positions, type Command, type GameState } from "./game.ts";
+import { currentAssignments, enabledPositions, isCurrent, pool, type Command, type GameState } from "./game.ts";
 
 export const autoWheelDelayMs = 3000;
 export type WheelCommand = Extract<Command, { type: "assign" }>;
@@ -8,7 +8,7 @@ export function nextWheel(state: GameState): { command: WheelCommand; label: str
         return null;
     if (!state.locked.length)
         return null;
-    for (const position of positions.filter(position => state.locked.includes(position))) {
+    for (const position of enabledPositions.filter(position => state.locked.includes(position))) {
         const assigned = currentAssignments(state, position);
         if (assigned.length === 10)
             continue;

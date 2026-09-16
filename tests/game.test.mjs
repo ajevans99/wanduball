@@ -28,6 +28,29 @@ test("exclusions refill the top ten and locking freezes a pool", () => {
   assert.throws(() => game.run({ type: "exclude", playerId: first.id }), /already locked/);
 });
 
+test("imports exclude Out and IR, refill pools, and allow manual overrides", () => {
+  const state = initialState();
+  const players = structuredClone(state.players);
+  const top = pool(state, "QB");
+  players.push({ ...top[0], id: "extra-reserve", points: 1, injury: null });
+  const statuses = ["Out", " ir ", "Injured Reserve", "Questionable", "Doubtful", null];
+  top.slice(0, statuses.length).forEach((player, index) => {
+    players.find(candidate => candidate.id === player.id).injury = statuses[index];
+  });
+  let imported = transition(state, {
+    type: "import", players, season: state.season, week: state.week,
+    leagueId: "1389331555339468800", managers: state.managers, source: "Sleeper",
+  }, () => 0);
+  for (const player of top.slice(0, 3)) {
+    assert.ok(imported.excluded.includes(player.id));
+    assert.ok(!pool(imported, "QB").some(candidate => candidate.id === player.id));
+  }
+  for (const player of top.slice(3, 6)) assert.ok(!imported.excluded.includes(player.id));
+  assert.equal(pool(imported, "QB").length, 10);
+  imported = transition(imported, { type: "exclude", playerId: top[0].id }, () => 0);
+  assert.ok(pool(imported, "QB").some(player => player.id === top[0].id));
+});
+
 test("nine spins make ten unique player-manager pairs per position", () => {
   const game = coordinator();
   assert.throws(() => game.run({ type: "assign", position: "QB" }), /lock/);
@@ -100,8 +123,8 @@ test("points layout is shuffled once and the selected slice matches the saved va
 
 test("weekly cleanup must be completed before advancing and preserves history", () => {
   const game = coordinator();
-  game.run({ type: "lock", position: "TE" });
-  for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "TE" });
+  game.run({ type: "lock", position: "RB" });
+  for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "RB" });
   game.run({ type: "coin" });
   game.run({ type: "rule" });
   game.run({ type: "points" });

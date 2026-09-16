@@ -73,7 +73,7 @@ test("nicknames survive repeated Sleeper imports and next week's empty pool by s
   await page.getByLabel("Sleeper league ID").fill("123456789");
   await page.getByRole("button", { name: "Pull the players" }).click();
   await expect(page.getByText("Sleeper nickname fixture 1", { exact: true })).toBeVisible();
-  for (const position of ["QB", "RB", "WR", "TE"] as const) {
+  for (const position of ["QB", "RB", "WR"] as const) {
     await page.getByRole("button", { name: position, exact: true }).click();
     const player = pool(fixture, position)[0];
     await nicknameInput(page, player.name).fill(`${position} superstar`);
@@ -93,7 +93,7 @@ test("nicknames survive repeated Sleeper imports and next week's empty pool by s
   await page.getByLabel("Week", { exact: true }).fill("2");
   await page.getByRole("button", { name: "Pull the players" }).click();
   await expect(page.getByText("Sleeper nickname fixture 3", { exact: true })).toBeVisible();
-  for (const position of ["QB", "RB", "WR", "TE"] as const) {
+  for (const position of ["QB", "RB", "WR"] as const) {
     await page.getByRole("button", { name: position, exact: true }).click();
     await expect(nicknameInput(page, pool(fixture, position)[0].name)).toHaveValue(`${position} superstar`);
   }

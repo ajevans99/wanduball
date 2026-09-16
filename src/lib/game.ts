@@ -1,5 +1,6 @@
 import { z } from "zod";
 export const positions = ["QB", "RB", "WR", "TE"] as const;
+export const enabledPositions: readonly Position[] = ["QB", "RB", "WR"];
 export const positionSchema = z.enum(positions);
 export type Position = z.infer<typeof positionSchema>;
 export const pointsWheel = [90, 40, 1, 2, 4, 5, 8, 10, -8, -5, -4, -2, -1, -40, -90];
@@ -139,6 +140,8 @@ export function transition(state: GameState, command: Command, random: (max: num
             break;
         }
         case "lock":
+            if (!enabledPositions.includes(command.position))
+                throw new Error("Tight end assignments are disabled for now.");
             if (s.pending.duration || s.changes.some(c => isCurrent(s, c)))
                 throw new Error("The scoring round has started. New player pools must wait until next week.");
             if (s.locked.includes(command.position))
@@ -148,6 +151,8 @@ export function transition(state: GameState, command: Command, random: (max: num
             s.locked.push(command.position);
             break;
         case "assign": {
+            if (!enabledPositions.includes(command.position))
+                throw new Error("Tight end assignments are disabled for now.");
             if (s.pending.duration || s.changes.some(c => isCurrent(s, c)))
                 throw new Error("The scoring round has started. Player assignments are closed for this week.");
             if (!s.locked.includes(command.position))
@@ -187,7 +192,7 @@ export function transition(state: GameState, command: Command, random: (max: num
         case "coin": {
             if (s.pending.duration || s.changes.some(c => isCurrent(s, c)))
                 throw new Error("This week's chaos round has already started.");
-            if (!s.locked.length || s.locked.some(p => currentAssignments(s, p).length !== 10))
+            if (!s.locked.some(p => enabledPositions.includes(p)) || s.locked.some(p => enabledPositions.includes(p) && currentAssignments(s, p).length !== 10))
                 throw new Error("Finish all locked player-assignment pools before the league-wide chaos round.");
             s.pending.duration = spin(["Weekly", "Permanent"], "How long must we live with our decisions?") === 0 ? "Weekly" : "Permanent";
             break;
@@ -269,7 +274,9 @@ export function transition(state: GameState, command: Command, random: (max: num
             s.leagueId = command.leagueId;
             s.managers = command.managers;
             s.source = command.source;
-            s.excluded = [];
+            s.excluded = command.players
+                .filter(player => ["out", "ir", "injured reserve"].includes(player.injury?.trim().toLowerCase() ?? ""))
+                .map(player => player.id);
             if (command.baselines && !s.changes.length) {
                 s.rules = s.rules.map(rule => ({
                     ...rule,

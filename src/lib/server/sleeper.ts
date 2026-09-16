@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { positions, type Player, type Position } from "../game";
+import { enabledPositions, positions, type Player, type Position } from "../game";
 import { HttpError } from "./http";
 import { leaguePoints, validateScoring } from "./sleeper-scoring";
 
@@ -166,7 +166,7 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
   }
   const players = positions.flatMap(position => candidates.filter(p => p.position === position)
     .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)));
-  if (positions.some(position => players.filter(player => player.position === position).length < 10)) {
+  if (enabledPositions.some(position => players.filter(player => player.position === position).length < 10)) {
     throw new HttpError(422, "Sleeper returned fewer than 10 players with statistics at one or more positions. Select another ranking period.");
   }
   const label = { ppr: "PPR", half_ppr: "half-PPR", std: "standard", league: "league scoring" }[ranking];
@@ -175,7 +175,7 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
     : `${statsSeason} Week ${week} actual statistics only${statsSeason === liveSeason && nfl.season_type === "regular" && week === nfl.week ? " (current week; results may be partial)" : ""}`;
   return {
     players, managers, season, week, leagueId,
-    source: `Sleeper ${label} — ${period}; setup: ${season} week ${week}. All roster statuses; published player statistics. Injuries require manual review.`,
+    source: `Sleeper ${label} — ${period}; setup: ${season} week ${week}. All roster statuses; published player statistics. Out and IR excluded automatically; review other injuries and byes.`,
     baselines: league.scoring_settings,
   };
 }

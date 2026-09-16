@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { ArrowDownToLine, ArrowRight, AudioLines, Check, CheckCheck, ChevronDown, CircleHelp, ClipboardList, Copy, Dices, ExternalLink, History, LayoutDashboard, LoaderCircle, LockKeyhole, LogIn, LogOut, Plus, Radio, RotateCcw, Settings2, ShieldAlert, Sparkles, Trophy, Users, Volume2, VolumeX, X, Zap, } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
-import { commandSchema, currentAssignments, GameState, isCurrent, nicknameMaxLength, Player, playerLabel, pool, pointsWheel, Position, positions, spinDurationMs, stateSchema, transition, type Command } from "@/lib/game";
+import { commandSchema, currentAssignments, enabledPositions, GameState, isCurrent, nicknameMaxLength, Player, playerLabel, pool, pointsWheel, Position, positions, spinDurationMs, stateSchema, transition, type Command } from "@/lib/game";
 import { initialState } from "@/lib/seed";
 import { wheelColors } from "@/lib/wheel";
 import { randomIndex, requestJson, supabase } from "@/lib/browser";
@@ -528,7 +528,7 @@ function PositionTabs({ position, setPosition, game }: {
     setPosition: (p: Position) => void;
     game: GameState;
 }) {
-    return <div className="position-tabs" aria-label="Choose player position">{positions.map(p => <button key={p} aria-pressed={p === position} className={p === position ? "selected" : ""} onClick={() => setPosition(p)}>{p}{game.locked.includes(p) && <LockKeyhole size={12}/>}</button>)}</div>;
+    return <div className="position-tabs" aria-label="Choose player position">{positions.map(p => <button key={p} disabled={!enabledPositions.includes(p)} title={!enabledPositions.includes(p) ? "Disabled for now" : undefined} aria-pressed={p === position} className={p === position ? "selected" : ""} onClick={() => setPosition(p)}>{p}{game.locked.includes(p) && <LockKeyhole size={12}/>}</button>)}</div>;
 }
 function PlayerName({ player, nickname }: {
     player: Player;
