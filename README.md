@@ -16,6 +16,10 @@ npm run dev
 
 Open http://localhost:3001. Without Supabase configuration, the app runs in local practice mode. Reading Sleeper rankings needs no credentials.
 
+Production can open the live room at `/` without a redirect: set `DEFAULT_ROOM_ID=69103cd4-0f84-4ce1-b9d1-dfb3096771bc` in Vercel's **Production** environment and redeploy. Leave it unset in previews and local development to default to practice. `?room=<id>` selects another shared room; `?mode=practice` always selects local practice, even when a room is specified. Invalid room links and live-room loading failures show an error rather than falling back to practice.
+
+Practice mode is not a separate backend environment. Use a separate Supabase project without production Sleeper credentials for shared preview testing.
+
 ## Shared rooms
 
 Create a Supabase project and set these in `.env.local`:
