@@ -103,7 +103,12 @@ test("dark surfaces cover every screen, dialogs and form controls with readable 
   }
   await page.getByRole("button", { name: "Invite the degenerates" }).click();
   await expect(page.getByRole("dialog")).toHaveCSS("background-color", "rgb(34, 29, 42)");
-  await expect(page.locator(".setup-note")).not.toHaveCSS("background-color", "rgb(241, 234, 248)");
+  if (await page.locator(".setup-note").count()) {
+    await expect(page.locator(".setup-note")).not.toHaveCSS("background-color", "rgb(241, 234, 248)");
+  } else {
+    await expect(page.getByRole("dialog").getByLabel("Email", { exact: true })).toBeVisible();
+    await expect(page.getByRole("dialog").getByLabel("Email", { exact: true })).not.toHaveCSS("background-color", "rgb(255, 255, 255)");
+  }
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Weekly setup", exact: true }).click();
   await page.getByLabel("Sleeper league ID").fill("12345");
