@@ -69,6 +69,10 @@ export async function POST(request: Request) {
       if (!access.data) throw new HttpError(403, "Only this room's commissioners can change it.");
     }
     const current = rowSchema.parse(data);
+    if (body.roomId === "69103cd4-0f84-4ce1-b9d1-dfb3096771bc"
+      && body.command.type === "assignment-status" && body.command.field === "applied") {
+      throw new HttpError(422, "Applied status in this room requires live Sleeper verification.");
+    }
     if (current.version !== body.version) throw new HttpError(409, "The room changed. Refresh it before trying again.");
 
     let state;
@@ -88,6 +92,7 @@ export async function POST(request: Request) {
     if (result.error?.code === "PT403") throw new HttpError(403, "You no longer have permission to change this room.");
     if (result.error?.code === "PT404") throw new HttpError(404, "Room not found.");
     if (result.error?.code === "PT409") throw new HttpError(409, "Another command won the race. Refresh the room before trying again.");
+    if (result.error?.code === "PT422") throw new HttpError(422, result.error.message);
     if (result.error) throw new HttpError(503, "Could not save the room. Refresh before retrying.");
     if (!result.data) throw new HttpError(409, "Another command won the race. Refresh the room before trying again.");
     return json(rowSchema.parse(result.data));

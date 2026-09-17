@@ -1,0 +1,4 @@
+[functions.sleeper-player]
+# The handler validates the caller's JWT with Supabase Auth on every request.
+# This supports projects using asymmetric signing keys as well as legacy JWTs.
+verify_jwt = false

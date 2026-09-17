@@ -2,7 +2,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
-import { ArrowDownToLine, ArrowRight, AudioLines, Check, CheckCheck, ChevronDown, CircleHelp, ClipboardList, Copy, Dices, ExternalLink, History, LayoutDashboard, LoaderCircle, LockKeyhole, LogIn, LogOut, Plus, Radio, RotateCcw, Settings2, ShieldAlert, Sparkles, Trophy, Users, Volume2, VolumeX, X, Zap, } from "lucide-react";
+import { ArrowDownToLine, ArrowRight, AudioLines, Check, ChevronDown, CircleHelp, ClipboardList, Copy, Dices, ExternalLink, History, LayoutDashboard, LoaderCircle, LockKeyhole, LogIn, LogOut, Plus, Radio, RotateCcw, Settings2, ShieldAlert, Sparkles, Trophy, Users, Volume2, VolumeX, X, Zap, } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { commandSchema, currentAssignments, enabledPositions, GameState, isCurrent, nicknameMaxLength, Player, playerLabel, pool, pointsWheel, Position, positions, spinDurationMs, stateSchema, transition, type Command } from "@/lib/game";
 import { initialState } from "@/lib/seed";
@@ -13,6 +13,8 @@ import { PlayerNicknameEditor } from "@/components/player-nickname-editor";
 import { AutoWheel } from "@/components/auto-wheel";
 import { RoomCommissioners } from "@/components/room-commissioners";
 import { useRoomAccess } from "@/components/use-room-access";
+import { SleeperAssignmentCell, useSleeperAssignments } from "@/components/sleeper-assignments";
+import { liveAutoEnabled } from "@/lib/sleeper-auto";
 import "./wheel-style.css";
 type Tab = "clubhouse" | "setup" | "arena" | "assignments" | "rules" | "history";
 type Room = {
@@ -114,7 +116,15 @@ function Game({ roomId }: {
     const activeAssignments = revealedAssignments.filter(a => isCurrent(game, a));
     const latestChange = [...game.changes].reverse().find(c => isCurrent(game, c));
     const selectedPool = pool(game, position);
-    const applied = activeAssignments.filter(a => a.applied).length;
+    const [cleanupWorking, setCleanupWorking] = useState(false);
+    const [cleanupLocked, setCleanupLocked] = useState(false);
+    const [cleanupProgress, setCleanupProgress] = useState("");
+    const cleanupStop = useRef(false);
+    const cleanupOutgoing = useRef<{ roomId: string | null; season: number; week: number; version: number } | null>(null);
+    useEffect(() => () => { cleanupStop.current = true; }, [roomId, canEdit]);
+    const sleeper = useSleeperAssignments(roomId, tab === "assignments", canEdit && !cleanupLocked, version);
+    const rosterBusy = cleanupWorking || cleanupLocked || sleeper.cleanupActive || sleeper.working || sleeper.autoPending || sleeper.autoPaused;
+    const applied = activeAssignments.filter(a => sleeper.linked ? sleeper.result?.assignments[a.id]?.status === "applied" : a.applied).length;
     const acceptRoom = useCallback((data: Room) => {
         if (data.version >= latestVersion.current) {
             latestVersion.current = data.version;
@@ -124,6 +134,61 @@ function Game({ roomId }: {
             setVersion(data.version);
         }
     }, []);
+    const openNextWeek = async () => {
+        if (!sleeper.linked) {
+            if (window.confirm(`Close week ${game.week} and open week ${game.week + 1}? This clears the current pools but preserves the ledger.`))
+                void send({ type: "next-week" });
+            return;
+        }
+        if (cleanupWorking || !canEdit || !supabase) return;
+        setCleanupWorking(true);
+        cleanupStop.current = false;
+        setError("");
+        const outgoing = cleanupOutgoing.current ?? { roomId, season: game.season, week: game.week, version };
+        const invoke = async (action: "cleanup-preview" | "cleanup-step") => {
+            const { data } = await supabase!.auth.getSession();
+            if (!data.session) throw new Error("Sign in again to resume cleanup.");
+            return requestJson<{ count?: number; done?: number; total?: number; completed?: boolean; room?: Room; operation?: unknown }>(
+                "/api/room/sleeper", {
+                    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
+                    body: JSON.stringify({ ...outgoing, action }),
+                });
+        };
+        try {
+            setCleanupProgress("Checking outgoing week and Sleeper rosters…");
+            const preview = await invoke("cleanup-preview");
+            if (preview.completed && preview.room) {
+                acceptRoom(preview.room);
+                cleanupOutgoing.current = null;
+                setCleanupLocked(false);
+                setCleanupProgress("Outgoing roster cleanup verified. Next week is open.");
+                return;
+            }
+            if (!window.confirm(`Drop week ${outgoing.week}'s ${preview.count ?? 0} assigned QB/RB/WR players from their original Sleeper rosters, then open week ${outgoing.week + 1}? TE and imported history stay. Already-absent players are skipped; moved players stop cleanup for commissioner review.`)) {
+                setCleanupProgress("");
+                return;
+            }
+            setCleanupLocked(true);
+            cleanupOutgoing.current = outgoing;
+            setCleanupProgress("Cleaning outgoing week. Leave this page open or stop and resume here.");
+            while (!cleanupStop.current) {
+                const result = await invoke("cleanup-step");
+                if (result.completed && result.room) {
+                    acceptRoom(result.room);
+                    setCleanupLocked(false);
+                    cleanupOutgoing.current = null;
+                    setCleanupProgress("Outgoing roster cleanup verified. Next week is open.");
+                    return;
+                }
+                setCleanupProgress(`${result.done ?? 0} of ${result.total ?? preview.count ?? 0} players verified. ${cleanupStop.current ? "Stopped; resume to finish." : "Cleaning outgoing week…"}`);
+            }
+        } catch (error) {
+            setCleanupProgress("Stopped. Week will not advance until cleanup is verified. Resume to reconcile; completed drops are not repeated.");
+            setError(error instanceof Error ? error.message : "Cleanup outcome unknown. Resume verification.");
+        } finally {
+            setCleanupWorking(false);
+        }
+    };
     useEffect(() => {
         if (!supabase)
             return;
@@ -234,7 +299,7 @@ function Game({ roomId }: {
         return () => window.removeEventListener("storage", handler);
     }, [ready, roomId]);
     async function send(command: Command) {
-        if (!canEdit || busy || commandInFlight.current)
+        if (!canEdit || busy || commandInFlight.current || rosterBusy)
             return;
         commandInFlight.current = true;
         setBusy(true);
@@ -243,6 +308,7 @@ function Game({ roomId }: {
         try {
             commandSchema.parse(command);
             if (roomId) {
+                const before = gameRef.current;
                 const token = (await supabase!.auth.getSession()).data.session?.access_token;
                 if (!token)
                     throw new Error("Sign in again to operate the chaos room.");
@@ -251,12 +317,13 @@ function Game({ roomId }: {
                     body: JSON.stringify({ type: "command", roomId, version, command }),
                 });
                 acceptRoom(data);
+                if (command.type === "assign") sleeper.committedSpin(before, data.state);
             }
             else {
                 const next = transition(gameRef.current, command, randomIndex);
                 localStorage.setItem(storageKey, JSON.stringify(next));
                 gameRef.current = next;
-                setNow(Date.now());
+                setNow(() => Date.now());
                 setGame(next);
             }
             if (["assign", "coin", "rule", "points"].includes(command.type) && !muted)
@@ -387,7 +454,7 @@ function Game({ roomId }: {
           <section className="hero"><div className="hero-copy"><Pill tone="hero-pill"><span className="pulse-dot"/> WEEK {String(game.week).padStart(2, "0")} · CHAOS IS ON THE MENU</Pill><h2>Good teams win.<br /><span>Funny teams</span><br />get remembered.</h2><p>Your weekly dose of randomized rosters and<br className="desktop-break"/> deeply irresponsible scoring decisions.</p><button className="button dark" onClick={openArena}>Enter the chaos room <ArrowRight size={18}/></button><small><Radio size={13}/>{roomId ? "Watch together. Suffer together." : "Try a spin. No actual rosters will be harmed."}</small></div><div className="hero-art"><span className="sticker top">NO SKILL.<br />ALL VIBES.</span><Football /><span className="hero-ticket">WHEEL-APPROVED NONSENSE <Dices size={17}/></span></div><div className="hero-bottom">OFFICIALLY UNOFFICIAL <span>★</span> COMMISSIONER&apos;S WORST NIGHTMARE <span>★</span> LET THE WHEEL DECIDE <span>★</span></div></section>
           <div className="stats-grid">
             <Stat icon={Users} label="MANAGERS IN DANGER" value={String(game.managers.length).padStart(2, "0")} note="Nobody is safe." color="purple"/>
-            <Stat icon={ClipboardList} label="PLAYERS REHOMED" value={String(activeAssignments.length).padStart(2, "0")} note={`${applied} confirmed in Sleeper`} color="green"/>
+            <Stat icon={ClipboardList} label="PLAYERS REHOMED" value={String(activeAssignments.length).padStart(2, "0")} note={sleeper.linked && !sleeper.result ? "Live Sleeper status unavailable" : `${applied} confirmed in Sleeper`} color="green"/>
             <Stat icon={ShieldAlert} label="PERMANENT BAD IDEAS" value={String(game.changes.filter(c => c.rule.duration === "Permanent").length).padStart(2, "0")} note="These are here to stay." color="orange"/>
             <Stat icon={AudioLines} label="LEAGUE SANITY" value="0%" note="A remarkably consistent metric." color="pink"/>
           </div>
@@ -395,7 +462,7 @@ function Game({ roomId }: {
           <div className="agenda-grid">
             <Agenda number="01" icon={Users} title="The player shuffle" text="The top ten get new homes. Their managers get new problems." tag={game.locked.length ? `${game.locked.length} POOL${game.locked.length > 1 ? "S" : ""} LOCKED` : "NEEDS YOUR ATTENTION"} action="Review player pools" onClick={() => setTab("setup")} color="purple"/>
             <Agenda number="02" icon={Dices} title="Spin. Regret. Repeat." text="A coin, a rule, a point value. What could possibly go wrong?" tag={latestChange ? "CHAOS DELIVERED" : "AWAITING CHAOS"} action="To the chaos room" onClick={openArena} color="green"/>
-            <Agenda number="03" icon={RotateCcw} title="Clean up the crime scene" text="Drop assigned players before waivers. Restore weekly rules." tag={`${game.assignments.filter(a => !a.dropped).length} DROPS TO CONFIRM`} action="Open cleanup checklist" onClick={() => setTab("assignments")} color="orange"/>
+            <Agenda number="03" icon={RotateCcw} title="Clean up the crime scene" text="Restore weekly scoring rules." tag="SCORING CLEANUP" action="Review scoring" onClick={() => setTab("rules")} color="orange"/>
           </div>
           <div className="bottom-grid"><section className="panel latest-chaos"><div className="panel-heading"><h3><Zap size={18}/> Latest act of chaos</h3><Pill tone="orange">LEAGUE-WIDE</Pill></div>{latestChange ? <><strong className="chaos-rule">{latestChange.rule.name}</strong><div className="point-change"><del>{signed(latestChange.previous)}</del><ArrowRight /><b>{signed(latestChange.value)}</b><span>points</span></div><p>{latestChange.rule.duration === "Permanent" ? "Permanent. Yes, really." : "This week only. Restore it before advancing."}</p></> : <div className="empty-inline"><span className="empty-dice"><Dices size={26}/></span><div><strong>Suspiciously normal. For now.</strong><p>The next scoring disaster will appear here.</p></div></div>}<button className="text-button" onClick={() => setTab("rules")}>View the rulebook <ArrowRight size={15}/></button></section>
             <section className="manifesto"><span>WORDS TO LOSE BY</span><blockquote>“Fantasy football is<br />mostly luck. We just<br /><em>made it official.</em>”</blockquote><small>— THE WANDUBALL CONSTITUTION, PROBABLY</small><span className="manifesto-star">✳</span></section></div>
@@ -428,7 +495,16 @@ function Game({ roomId }: {
             </div>
           </section>
           <div className="arena-controls">
-            <AutoWheel game={game} canEdit={canEdit} busy={busy} spinning={spinning} suspended={settings || help} error={error} onSpin={async command => {
+            {canEdit && sleeper.linked && <section className="panel">
+              <h3>Live Sleeper adds</h3>
+              {liveAutoEnabled(roomId, game) ? <>
+                <label><input type="checkbox" role="switch" aria-label="Automatic Sleeper adds" checked={sleeper.autoEnabled} disabled={rosterBusy} onChange={e => sleeper.setAutoEnabled(e.target.checked)}/> Add after each player wheel reveal</label>
+                <p role="status">{sleeper.autoPaused ? "Auto-add paused. Resolve the roster issue, then resume verification." : sleeper.progress || (sleeper.autoEnabled ? "On · new spins in this tab only. No backlog or scoring edits." : "Off · apply assignments manually.")}</p>
+                {sleeper.error && <p role="alert">{sleeper.error}</p>}
+                {sleeper.autoPaused && <button className="button dark" onClick={sleeper.resumeAuto}>Resume roster verification</button>}
+              </> : <p>Automatic adds start in 2026 Week 3. This week stays manual.</p>}
+            </section>}
+            <AutoWheel game={game} canEdit={canEdit} busy={busy || rosterBusy} spinning={spinning} suspended={settings || help || sleeper.autoPaused} error={error} onSpin={async command => {
                 if (command.type === "assign")
                     setPosition(command.position);
                 return send(command);
@@ -439,14 +515,14 @@ function Game({ roomId }: {
               <PositionTabs position={position} setPosition={setPosition} game={game}/>
               <div className="progress-label"><span>{position} assignment progress</span><strong>{currentAssignments(game, position).length}/10</strong></div>
               <div className="progress-track"><i style={{ width: `${currentAssignments(game, position).length * 10}%` }}/></div>
-              <button className="button dark full" disabled={!canEdit || busy || spinning || !game.locked.includes(position) || currentAssignments(game, position).length === 10} onClick={() => void send({ type: "assign", position })}><Dices size={18}/>{spinning ? "Chaos in progress..." : `Assign a ${position}`}<ArrowRight size={17}/></button>
+              <button className="button dark full" disabled={!canEdit || busy || rosterBusy || spinning || !game.locked.includes(position) || currentAssignments(game, position).length === 10} onClick={() => void send({ type: "assign", position })}><Dices size={18}/>{spinning ? "Chaos in progress..." : `Assign a ${position}`}<ArrowRight size={17}/></button>
               {!game.locked.includes(position) && <button className="text-button" onClick={() => setTab("setup")}>Review and lock this pool first <ArrowRight size={14}/></button>}
             </section>
             <section className="panel chaos-controls">
               <Pill tone="orange">ROUND 02 · EVERYONE&apos;S PROBLEM</Pill><h3>Break the scoring system.</h3><p>This round is hands-on. Make it count.</p>
-              <button className="step-button" disabled={!canEdit || busy || spinning || Boolean(game.pending.duration || latestChange)} onClick={() => void send({ type: "coin" })}><span>1</span><div><strong>Flip the duration coin</strong><small>{game.pending.duration ?? latestChange?.rule.duration ?? "Weekly or permanent?"}</small></div><Dices size={17}/></button>
-              <button className="step-button" disabled={!canEdit || busy || spinning || !game.pending.duration || Boolean(game.pending.ruleId)} onClick={() => void send({ type: "rule" })}><span>2</span><div><strong>Pick the terrible rule</strong><small>{game.rules.find(r => r.id === game.pending.ruleId)?.name ?? latestChange?.rule.name ?? "The matching rule wheel"}</small></div><ShieldAlert size={17}/></button>
-              <button className="step-button" disabled={!canEdit || busy || spinning || !game.pending.ruleId} onClick={() => void send({ type: "points" })}><span>3</span><div><strong>Make the points worse</strong><small>{latestChange ? `${signed(latestChange.value)} points. Incredible.` : "A replacement value, not a bonus"}</small></div><Zap size={17}/></button>
+              <button className="step-button" disabled={!canEdit || busy || rosterBusy || spinning || Boolean(game.pending.duration || latestChange)} onClick={() => void send({ type: "coin" })}><span>1</span><div><strong>Flip the duration coin</strong><small>{game.pending.duration ?? latestChange?.rule.duration ?? "Weekly or permanent?"}</small></div><Dices size={17}/></button>
+              <button className="step-button" disabled={!canEdit || busy || rosterBusy || spinning || !game.pending.duration || Boolean(game.pending.ruleId)} onClick={() => void send({ type: "rule" })}><span>2</span><div><strong>Pick the terrible rule</strong><small>{game.rules.find(r => r.id === game.pending.ruleId)?.name ?? latestChange?.rule.name ?? "The matching rule wheel"}</small></div><ShieldAlert size={17}/></button>
+              <button className="step-button" disabled={!canEdit || busy || rosterBusy || spinning || !game.pending.ruleId} onClick={() => void send({ type: "points" })}><span>3</span><div><strong>Make the points worse</strong><small>{latestChange ? `${signed(latestChange.value)} points. Incredible.` : "A replacement value, not a bonus"}</small></div><Zap size={17}/></button>
             </section>
           </div>
           <section className="panel arena-recent">
@@ -456,10 +532,20 @@ function Game({ roomId }: {
         </div>}
 
         {tab === "assignments" && <>
-          <div className="checklist-banner"><div><Pill tone="orange">MANUAL IN SLEEPER</Pill><h2>The wheel makes decisions.<br />You do the paperwork.</h2><p>Assign the players in Sleeper, then confirm below. At week&apos;s end, drop them before waivers and mark each drop.</p></div><ClipboardList size={76} strokeWidth={1}/></div>
-          <section className="panel table-panel"><div className="panel-heading"><h3>Week {game.week} · roster relocation program</h3><Pill>{applied}/{activeAssignments.length} APPLIED</Pill></div><div className="table-scroll"><table><thead><tr><th>LUCKY MANAGER</th><th>NEW RESPONSIBILITY</th><th>POSITION</th><th>APPLIED IN SLEEPER</th><th>DROPPED BEFORE WAIVERS</th></tr></thead><tbody>{activeAssignments.map(a => <tr key={a.id}><td><strong>{a.manager.name}</strong></td><td><PlayerName player={a.player} nickname={a.nickname}/></td><td><Pill tone="purple">{a.player.position}</Pill></td><td><button className={`check-button ${a.applied ? "checked" : ""}`} disabled={!canEdit || busy || spinning} onClick={() => void send({ type: "assignment-status", id: a.id, field: "applied" })}><Check size={15}/>{a.applied ? "Applied" : "Confirm applied"}</button></td><td><button className={`check-button ${a.dropped ? "checked" : ""}`} disabled={!canEdit || busy || spinning || !a.applied} onClick={() => void send({ type: "assignment-status", id: a.id, field: "dropped" })}><CheckCheck size={15}/>{a.dropped ? "Dropped" : "Confirm dropped"}</button></td></tr>)}</tbody></table></div>{!activeAssignments.length && <Empty title="Nobody has been relocated." text="Run the assignment wheels to populate your checklist."/>}</section>
-          <section className="panel week-close"><div><h3><RotateCcw size={18}/> Wrap it up. Do it again.</h3><p>All player drops and weekly scoring restores must be confirmed. Permanent changes must be applied. History is kept; next week starts with a fresh import.</p></div><button className="button dark" disabled={!canEdit || busy || spinning} onClick={() => { if (window.confirm(`Close week ${game.week} and open week ${game.week + 1}? This clears the current pools but preserves the ledger.`))
-            void send({ type: "next-week" }); }}>Open week {game.week + 1}<ArrowRight size={17}/></button></section>
+          <div className="checklist-banner"><div><Pill tone="orange">{sleeper.linked ? "LIVE SLEEPER ROSTERS" : "MANUAL IN SLEEPER"}</Pill><h2>The wheel makes decisions.<br />You do the paperwork.</h2><p>{sleeper.linked ? "Verify membership below. Commissioners may apply one eligible absent player after confirmation. Drops remain manual in Sleeper." : "Assign the players in Sleeper, then confirm below. At week's end, drop them before waivers and mark each drop."}</p></div><ClipboardList size={76} strokeWidth={1}/></div>
+          {sleeper.linked && <section className="panel"><p>Live Sleeper membership, not a manual checklist. Imported roster history is read-only and can never be applied. Adds outside the integration&apos;s approved round are blocked.</p><p>{!canEdit ? "Sign in as a commissioner to verify status." : sleeper.error || (sleeper.result ? `Verified at ${new Date(sleeper.result.checkedAt).toLocaleTimeString()}` : "Status unavailable until verification completes.")}</p><button className="button" disabled={!canEdit || sleeper.working} onClick={() => void sleeper.refresh()}>Refresh Sleeper status</button></section>}
+          <section className="panel table-panel"><div className="panel-heading"><h3>Week {game.week} · roster relocation program</h3><Pill>{sleeper.linked && !sleeper.result ? "STATUS UNAVAILABLE" : `${applied}/${activeAssignments.length} APPLIED`}</Pill></div><div className="table-scroll"><table><thead><tr><th>LUCKY MANAGER</th><th>NEW RESPONSIBILITY</th><th>POSITION</th><th>APPLIED IN SLEEPER</th></tr></thead><tbody>{activeAssignments.map(a => <tr key={a.id}><td><strong>{a.manager.name}</strong></td><td><PlayerName player={a.player} nickname={a.nickname}/></td><td><Pill tone="purple">{a.player.position}</Pill></td><td>{sleeper.linked ? <SleeperAssignmentCell status={sleeper.result?.assignments[a.id]} disabled={!canEdit || busy || spinning || sleeper.working} apply={() => void sleeper.apply(a)}/> : <button className={`check-button ${a.applied ? "checked" : ""}`} disabled={!canEdit || busy || spinning} onClick={() => void send({ type: "assignment-status", id: a.id, field: "applied" })}><Check size={15}/>{a.applied ? "Applied" : "Confirm applied"}</button>}</td></tr>)}</tbody></table></div>{!activeAssignments.length && <Empty title="Nobody has been relocated." text="Run the assignment wheels to populate your checklist."/>}</section>
+          {sleeper.linked && canEdit && <div className="panel sleeper-apply-footer">
+            <span role="status">{sleeper.progress || "Adds eligible players to their assigned teams. No drops."}</span>
+            {sleeper.working
+              ? <button className="button light" onClick={sleeper.stop}>Stop after this player</button>
+              : <button className="button dark" disabled={busy || spinning || (sleeper.autoPending && !sleeper.autoPaused) || !activeAssignments.some(a => sleeper.result?.assignments[a.id]?.canApply)} onClick={() => void sleeper.applyAll(activeAssignments)}>Apply to all</button>}
+            {sleeper.autoPaused && <button className="button dark" disabled={sleeper.working} onClick={sleeper.resumeAuto}>Resume roster verification</button>}
+          </div>}
+          <section className="panel week-close"><div><h3><RotateCcw size={18}/> Wrap it up. Do it again.</h3><p>Confirm weekly scoring restores and permanent rule applications. {sleeper.linked ? "Opening next week drops outgoing QB/RB/WR assignments from Sleeper. TE and imported history stay." : "History stays; next week starts with a fresh import."}</p>
+            {cleanupProgress && <p role="status" aria-live="polite">{cleanupProgress}</p>}</div>
+            {cleanupWorking && <button className="button" onClick={() => { cleanupStop.current = true; setCleanupProgress("Stopping after the current verification. Resume here when ready."); }}>Stop after current player</button>}
+            <button className="button dark" disabled={!canEdit || busy || spinning || cleanupWorking || (!(cleanupLocked || sleeper.cleanupActive) && rosterBusy)} onClick={() => void openNextWeek()}>{cleanupLocked || sleeper.cleanupActive ? "Resume cleanup" : `Open week ${game.week + 1}`}<ArrowRight size={17}/></button></section>
         </>}
 
         {tab === "rules" && <>
@@ -477,6 +563,17 @@ function Game({ roomId }: {
 
         {tab === "history" && <>
           <section className="panel ledger-heading"><div><h3><History size={19}/> The permanent paper trail</h3><p>Every assignment and scoring change. Even the ones you&apos;d rather forget.</p></div><button className="button dark" onClick={exportLedger}><ArrowDownToLine size={16}/>Export the evidence</button></section>
+          {!!game.rosterHistory?.length && <section className="panel">
+            <div className="panel-heading"><h3>Imported Sleeper roster history</h3><Pill>{game.rosterHistory.length} COMMISSIONER ADDS</Pill></div>
+            <p>Reconstructed from completed roster transactions, not original wheel results. No historical fantasy points, player statistics, nicknames, or scoring outcomes are inferred. Later removals retain their actual transaction dates.</p>
+            {game.rosterHistory.map(a => <div className="history-row" key={a.id}>
+              <Pill>{a.player.position}</Pill><strong>{a.player.name}</strong><ArrowRight size={15}/><span>{a.manager.name}</span>
+              <small>{a.season} · Week {a.week} · Imported commissioner add<br/>
+                Transaction {a.transactionId} · {new Date(a.occurredAt).toISOString().slice(0, 10)}
+                {a.removalTransactionId && <><br/>Later removed · {new Date(a.removedAt!).toISOString().slice(0, 10)} · Transaction {a.removalTransactionId}</>}
+              </small>
+            </div>)}
+          </section>}
           {!revealedAssignments.length && !game.changes.length ? <section className="panel"><Empty title="A clean record. How embarrassing." text="Finish a wheel spin and your first entry will appear here."/></section> : <div className="history-list">{Array.from(new Set([...revealedAssignments, ...game.changes].map(a => `${a.season}-${a.week}`))).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(key => { const [season, week] = key.split("-").map(Number); const assignments = revealedAssignments.filter(a => a.week === week && a.season === season), changes = game.changes.filter(c => c.week === week && c.season === season); return <section className="panel" key={key}><div className="panel-heading"><h3>{season} · Week {String(week).padStart(2, "0")}</h3><Pill>{assignments.length} RELOCATIONS</Pill></div>{changes.map(c => <div className="history-rule" key={c.id}><Zap size={17}/><strong>{c.rule.name}: {signed(c.previous)} → {signed(c.value)}</strong><Pill tone="purple">{c.rule.duration}</Pill></div>)}{assignments.map(a => <div className="history-row" key={a.id}><Pill>{a.player.position}</Pill><strong>{playerLabel(a.player, a.nickname)}</strong><ArrowRight size={15}/><span>{a.manager.name}</span><small>{a.dropped ? "Dropped" : a.applied ? "Applied" : "Needs applying"}</small></div>)}</section>; })}</div>}
         </>}
         <footer><span><Dices size={15}/>WANDUBALL. WHERE LOGIC GOES ON IR.</span><span>Made with poor judgment & excellent intentions. <span className="footer-star">✳</span></span></footer>

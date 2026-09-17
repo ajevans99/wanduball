@@ -25,6 +25,17 @@ export const ruleSchema = z.object({
 });
 export type Rule = z.infer<typeof ruleSchema>;
 export const managerSchema = z.object({ id: z.string().min(1), name: z.string().min(1).max(100) });
+export const rosterHistorySchema = z.object({
+    id: z.string().min(1),
+    season: z.number().int(), week: z.number().int(),
+    source: z.literal("sleeper-commissioner-add"),
+    transactionId: z.string().min(1),
+    occurredAt: z.number().int(),
+    player: playerSchema.pick({ id: true, name: true, position: true }),
+    manager: managerSchema,
+    removalTransactionId: z.string().optional(),
+    removedAt: z.number().int().optional(),
+});
 const assignmentSchema = z.object({
     id: z.string(), week: z.number().int(), season: z.number().int(),
     player: playerSchema, manager: managerSchema,
@@ -48,6 +59,8 @@ export const stateSchema = z.object({
     excluded: z.array(z.string()),
     locked: z.array(positionSchema),
     assignments: z.array(assignmentSchema),
+    // Read-only roster evidence, deliberately separate from wheel/apply assignments.
+    rosterHistory: z.array(rosterHistorySchema).optional(),
     rules: z.array(ruleSchema).min(1),
     changes: z.array(changeSchema),
     pending: z.object({
@@ -100,8 +113,7 @@ export function currentAssignments(state: GameState, position?: Position) {
     return state.assignments.filter(a => isCurrent(state, a) && (!position || a.player.position === position));
 }
 export function hasCleanup(state: GameState) {
-    return state.assignments.some(a => !a.dropped)
-        || state.changes.some(c => c.rule.duration === "Weekly" && !c.reverted)
+    return state.changes.some(c => c.rule.duration === "Weekly" && !c.reverted)
         || state.changes.some(c => c.rule.duration === "Permanent" && !c.applied);
 }
 // A single transition function is used by local practice and the authoritative server.
@@ -248,7 +260,7 @@ export function transition(state: GameState, command: Command, random: (max: num
             if (s.week === 18)
                 throw new Error("Season complete! Export the ledger before starting a new season.");
             if (hasCleanup(s))
-                throw new Error("Confirm all player drops, weekly scoring restores, and permanent rule applications first.");
+                throw new Error("Confirm weekly scoring restores and permanent rule applications first.");
             if (s.pending.duration)
                 throw new Error("Finish the current chaos round first.");
             s.week += 1;

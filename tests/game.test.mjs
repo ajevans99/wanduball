@@ -133,7 +133,6 @@ test("weekly cleanup must be completed before advancing and preserves history", 
   assert.throws(() => game.run({ type: "assignment-status", id: first.id, field: "dropped" }), /applied/);
   for (const assignment of game.state.assignments) {
     game.run({ type: "assignment-status", id: assignment.id, field: "applied" });
-    game.run({ type: "assignment-status", id: assignment.id, field: "dropped" });
   }
   const change = game.state.changes[0];
   game.run({ type: "change-status", id: change.id, field: "applied" });
@@ -143,6 +142,7 @@ test("weekly cleanup must be completed before advancing and preserves history", 
   assert.equal(game.state.week, 2);
   assert.equal(game.state.players.length, 0);
   assert.equal(game.state.assignments.length, 10);
+  assert.ok(game.state.assignments.every(a => !a.dropped));
   assert.equal(currentAssignments(game.state).length, 0);
   assert.equal(game.state.changes[0].reverted, true);
 });
