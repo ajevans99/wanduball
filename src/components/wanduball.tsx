@@ -15,6 +15,7 @@ import { RoomCommissioners } from "@/components/room-commissioners";
 import { useRoomAccess } from "@/components/use-room-access";
 import { SleeperAssignmentCell, useSleeperAssignments } from "@/components/sleeper-assignments";
 import { liveAutoEnabled } from "@/lib/sleeper-auto";
+import { selectRoom } from "@/lib/room-selection";
 import "./wheel-style.css";
 type Tab = "clubhouse" | "setup" | "arena" | "assignments" | "rules" | "history";
 type Room = {
@@ -54,13 +55,14 @@ const serverSnapshot = () => false;
 function LoadingGame() {
     return <div className="loading-screen"><Dices size={36}/><h1>wanduball<span>.</span></h1><p>Warming up the bad idea machine...</p></div>;
 }
-export default function Wanduball() {
-    return <Suspense fallback={<LoadingGame />}><HydratedGame /></Suspense>;
+export default function Wanduball({ defaultRoomId = null }: { defaultRoomId?: string | null }) {
+    return <Suspense fallback={<LoadingGame />}><HydratedGame defaultRoomId={defaultRoomId} /></Suspense>;
 }
-function HydratedGame() {
+function HydratedGame({ defaultRoomId }: { defaultRoomId: string | null }) {
     const hydrated = useSyncExternalStore(subscribeHydration, clientSnapshot, serverSnapshot);
     const params = useSearchParams();
-    const roomId = params.get("room");
+    const { roomId, error } = selectRoom(params, defaultRoomId);
+    if (error) return <div role="alert" className="notice error">{error}</div>;
     return hydrated ? <Game key={roomId ?? "practice"} roomId={roomId}/> : <LoadingGame />;
 }
 function loadPractice(roomId: string | null) {
@@ -87,7 +89,7 @@ function Game({ roomId }: {
     const [ready, setReady] = useState(!roomId);
     const [busy, setBusy] = useState(false);
     const [notice, setNotice] = useState("");
-    const [error, setError] = useState(initial.error || (roomId && !supabase ? "This live room needs Supabase configuration. Open the site without ?room= to use practice mode." : ""));
+    const [error, setError] = useState(initial.error || (roomId && !supabase ? "This live room needs Supabase configuration. Open /?mode=practice to use practice mode." : ""));
     const [version, setVersion] = useState(0);
     const [session, setSession] = useState<Session | null>(null);
     const { access, refreshAccess, changeCommissioner } = useRoomAccess(roomId, session, setError);
@@ -445,6 +447,7 @@ function Game({ roomId }: {
         <button className="icon-button" title={muted ? "Enable sound effects" : "Mute sound effects"} aria-label={muted ? "Enable sound effects" : "Mute sound effects"} onClick={() => { setMuted(!muted); if (muted)
         playSound(); }}>{muted ? <VolumeX size={18}/> : <Volume2 size={18}/>}</button></div></header>
       <main>
+        {!roomId && <div role="status" className="notice">Practice - not live. Changes stay in this browser and do not affect the league.</div>}
         <div className="page-heading"><div><div className="eyebrow"><span className="tiny-star">✦</span> A VERY SERIOUS FANTASY FOOTBALL OPERATION</div><h1>{tab === "clubhouse" ? <>Welcome to the <span>nonsense.</span></> : tab === "setup" ? <>Prepare the <span>victims.</span></> : tab === "arena" ? <>Let the wheel <span>cook.</span></> : tab === "assignments" ? <>Department of <span>waiver crimes.</span></> : tab === "rules" ? <>The rules are <span>made up.</span></> : <>Keep the <span>receipts.</span></>}</h1><p>{tab === "clubhouse" ? "Ten managers. Zero ice cream. One KZ wheel." : tab === "setup" ? "Review the rankings. Remove the unavailable. Send ten brave souls into the wheel." : tab === "arena" ? "One result. Every screen. Absolutely no appeals." : tab === "assignments" ? "Make the moves in Sleeper. Keep the evidence here." : tab === "rules" ? "League-wide scoring changes, brought to you by profoundly bad ideas." : "A permanent record of temporary lapses in judgment."}</p></div><button className="button light" onClick={share}><Users size={16}/>Invite the degenerates<ArrowRight size={15}/></button></div>
         {!roomId && <div className="demo-banner"><span><Sparkles size={15}/><strong>Practice playground</strong> · Sample players & fictional points. Nothing here changes Sleeper.</span><button onClick={() => setSettings(true)}>Set up a live room <ArrowRight size={14}/></button></div>}
         {roomId && !canEdit && ready && <div className="demo-banner"><span><Radio size={15}/>Spectator mode. The commissioner controls the wheels; you supply the outrage.</span><button onClick={() => setSettings(true)}>Commissioner sign in</button></div>}
