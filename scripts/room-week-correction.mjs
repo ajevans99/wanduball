@@ -40,7 +40,7 @@ export function prepareCorrection(snapshot) {
       const roster = snapshot.rosters.find(r => r.roster_id === rosterId);
       assert.ok(roster, `Missing roster ${rosterId}`);
       const user = snapshot.users.find(u => u.user_id === roster.owner_id);
-      const manager = state.managers.find(m => m.id === String(rosterId))
+      const manager = state.managers.find(m => m.id === String(rosterId))idk 
         ?? { id: String(rosterId), name: user?.metadata?.team_name || user?.display_name };
       assert.ok(manager.name, `Missing manager ${rosterId}`);
       const removal = events.slice(index + 1).find(e =>

@@ -101,14 +101,61 @@ function Game({ roomId }: {
     const [newRule, setNewRule] = useState("");
     const [newDuration, setNewDuration] = useState<"Weekly" | "Permanent">("Weekly");
     const [newBaseline, setNewBaseline] = useState("0");
+    const [artImage, setArtImage] = useState<string | null>(null);
+    const [artPreviewOpen, setArtPreviewOpen] = useState(false);
+    const [draggingArt, setDraggingArt] = useState(false);
     const latestVersion = useRef(-1);
     const gameRef = useRef(game);
     const commandInFlight = useRef(false);
     const wheelPanelRef = useRef<HTMLElement>(null);
     const audioRef = useRef<AudioContext | null>(null);
+    const artInputRef = useRef<HTMLInputElement | null>(null);
     const [importSeason, setImportSeason] = useState(2026);
     const [importWeek, setImportWeek] = useState(1);
     const canEdit = ready && !storageBlocked && (!roomId || Boolean(session && access?.canEdit));
+    const handleArtFile = useCallback((fileList: FileList | null) => {
+        const file = fileList?.[0];
+        if (!file) return;
+        if (!file.type.startsWith("image/")) {
+            setError("Please choose an image file for the art corner.");
+            return;
+        }
+        const nextImage = URL.createObjectURL(file);
+        setArtImage(current => {
+            if (current?.startsWith("blob:"))
+                URL.revokeObjectURL(current);
+            return nextImage;
+        });
+        setNotice("Art saved to the chaos room.");
+        setError("");
+    }, []);
+    useEffect(() => {
+        try {
+            const saved = localStorage.getItem("wanduball-art-v1");
+            if (saved) setArtImage(saved);
+        } catch {
+            // Ignore storage errors in private browsing or restricted environments.
+        }
+    }, []);
+    useEffect(() => {
+        if (!artImage) {
+            try {
+                localStorage.removeItem("wanduball-art-v1");
+            } catch {
+                // Ignore storage errors in private browsing or restricted environments.
+            }
+            return;
+        }
+        try {
+            localStorage.setItem("wanduball-art-v1", artImage);
+        } catch {
+            // Ignore storage errors in private browsing or restricted environments.
+        }
+    }, [artImage]);
+    useEffect(() => () => {
+        if (artImage?.startsWith("blob:"))
+            URL.revokeObjectURL(artImage);
+    }, [artImage]);
     const spinning = Boolean(game.lastSpin && now < game.lastSpin.startedAt + spinDurationMs);
     const spinAssignment = game.assignments.find(a => a.id === game.lastSpin?.id);
     const countdown = spinning && game.lastSpin ? Math.max(0, Math.ceil((game.lastSpin.startedAt - now) / 1000)) : 0;
@@ -524,7 +571,26 @@ function Game({ roomId }: {
               <button className="step-button" disabled={!canEdit || busy || rosterBusy || spinning || !game.pending.duration || Boolean(game.pending.ruleId)} onClick={() => void send({ type: "rule" })}><span>2</span><div><strong>Pick the terrible rule</strong><small>{game.rules.find(r => r.id === game.pending.ruleId)?.name ?? latestChange?.rule.name ?? "The matching rule wheel"}</small></div><ShieldAlert size={17}/></button>
               <button className="step-button" disabled={!canEdit || busy || rosterBusy || spinning || !game.pending.ruleId} onClick={() => void send({ type: "points" })}><span>3</span><div><strong>Make the points worse</strong><small>{latestChange ? `${signed(latestChange.value)} points. Incredible.` : "A replacement value, not a bonus"}</small></div><Zap size={17}/></button>
             </section>
+            <section className={`panel art-corner ${draggingArt ? "dragging" : ""}`}>
+              <div className="art-corner-header">
+                <Pill tone="purple">ART CORNER</Pill>
+                {artImage && <button type="button" className="text-button" onClick={() => setArtPreviewOpen(true)}>Preview</button>}
+              </div>
+              <div className="art-upload-zone" onDragOver={event => { event.preventDefault(); setDraggingArt(true); }} onDragLeave={() => setDraggingArt(false)} onDrop={event => { event.preventDefault(); setDraggingArt(false); handleArtFile(event.dataTransfer.files); }} onClick={() => artInputRef.current?.click()}>
+                <input ref={artInputRef} type="file" accept="image/*" hidden onChange={event => handleArtFile(event.target.files)} />
+                {artImage ? <button type="button" className="art-image-button" onClick={event => { event.stopPropagation(); setArtPreviewOpen(true); }} aria-label="Preview uploaded art"><img src={artImage} alt="Uploaded art from the chaos room" /></button> : <>
+                  <Sparkles size={28} />
+                  <strong>Drop your masterpiece here</strong>
+                  <span>or upload an image</span>
+                </>}
+              </div>
+              <div className="art-actions">
+                <button type="button" className="button dark" onClick={() => artInputRef.current?.click()}><Plus size={16}/>Upload image</button>
+                {artImage && <button type="button" className="button light" onClick={() => setArtImage(null)}>Remove</button>}
+              </div>
+            </section>
           </div>
+          {artPreviewOpen && artImage && <div className="modal-overlay art-preview-overlay" onClick={() => setArtPreviewOpen(false)}><section role="dialog" aria-modal="true" aria-label="Large art preview" className="art-preview-modal" onClick={event => event.stopPropagation()}><button type="button" className="modal-close icon-button" aria-label="Close art preview" onClick={() => setArtPreviewOpen(false)}><X size={20}/></button><img src={artImage} alt="Full-size preview of the uploaded art" /></section></div>}
           <section className="panel arena-recent">
             <div className="panel-heading"><h3>The newly inconvenienced</h3><button className="text-button" onClick={() => setTab("assignments")}>All assignments <ArrowRight size={14}/></button></div>
             {activeAssignments.length ? <div className="recent-grid">{[...activeAssignments].reverse().slice(0, 6).map(a => <div className="recent-assignment" key={a.id}><PlayerName player={a.player} nickname={a.nickname}/><ArrowRight size={16}/><strong>{a.manager.name}</strong></div>)}</div> : <Empty title={spinning && spinAssignment ? "Assignment incoming. No spoilers." : "No victims. Yet."} text="Your assignment results land here and in the weekly ledger after the wheel stops."/>}

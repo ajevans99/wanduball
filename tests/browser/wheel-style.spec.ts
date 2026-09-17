@@ -57,3 +57,19 @@ test("large nickname-only slices preserve full results and reveal the winner onl
     await expect(page.locator(".winning-label span")).toHaveAttribute("title", `${result.nickname} (${result.player.name})`);
     await expect(page.locator(".wheel-result h2")).toHaveText(`${result.nickname} (${result.player.name})`);
 });
+
+test("chaos room art corner supports upload and preview", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "The chaos room", exact: true }).click();
+    await expect(page.locator(".art-corner")).toBeVisible();
+    const input = page.locator('input[type="file"][accept="image/*"]');
+    await expect(input).toHaveCount(1);
+    await input.setInputFiles({
+        name: "chaos-art.png",
+        mimeType: "image/png",
+        buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAF", "base64"),
+    });
+    await expect(page.locator(".art-corner img")).toBeVisible();
+    await page.locator(".art-corner img").click();
+    await expect(page.locator(".art-preview-modal")).toBeVisible();
+});
