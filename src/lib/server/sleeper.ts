@@ -42,6 +42,7 @@ export const sleeperQuerySchema = z.object({
   season: z.coerce.number().int().min(2020).max(2100),
   week: z.coerce.number().int().min(1).max(18),
   statsSeason: z.coerce.number().int().min(2020).max(2100).optional(),
+  statsWeek: z.coerce.number().int().min(1).max(18).optional(),
   ranking: z.enum(["ppr", "half_ppr", "std", "league"]).default("league"),
 });
 
@@ -87,10 +88,15 @@ function nflPlayers() {
 export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
   const { leagueId, season, week, ranking } = query;
   const statsSeason = query.statsSeason ?? season;
+  const statsWeek = query.statsWeek ?? week;
   if (statsSeason > season) throw new HttpError(400, "The statistics season cannot be later than the selected game season.");
   if (statsSeason < season && week !== 1) {
-    throw new HttpError(422, "Previous-season totals are only an explicit Week 1 fallback. For Week N > 1, use the selected season's Week N actual statistics.");
+    throw new HttpError(422, "Previous-season totals are only an explicit Week 1 fallback.");
   }
+  if (statsSeason === season && statsWeek > week)
+    throw new HttpError(422, "The statistics week cannot be later than the assignment week.");
+  if (statsSeason < season && query.statsWeek !== undefined)
+    throw new HttpError(422, "Do not select a statistics week for the full-season fallback.");
   const [league, nfl] = await Promise.all([
     upstream(`league/${leagueId}`, leagueSchema),
     upstream("state/nfl", nflSchema, 60),
@@ -110,7 +116,7 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
     || (statsSeason === liveSeason && (
       (statsSeason < season && !["post", "off"].includes(nfl.season_type))
       || (statsSeason === season && !["post", "off"].includes(nfl.season_type)
-        && (nfl.season_type !== "regular" || week > nfl.week))
+        && (nfl.season_type !== "regular" || statsWeek > nfl.week))
     ))) {
     throw new HttpError(422, "That ranking period is in the future or unavailable. Select a week with actual NFL statistics; previous-season totals are an explicit Week 1 option only.");
   }
@@ -133,7 +139,7 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
   const scoreKey = `pts_${ranking}`;
   const paths = statsSeason < season
     ? [`stats/nfl/regular/${statsSeason}`]
-    : [`stats/nfl/regular/${statsSeason}/${week}`];
+    : [`stats/nfl/regular/${statsSeason}/${statsWeek}`];
   const [dictionary, periods] = await Promise.all([
     nflPlayers(),
     Promise.all(paths.map(path => upstream(path, statsSchema, 3600))),
@@ -172,7 +178,7 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
   const label = { ppr: "PPR", half_ppr: "half-PPR", std: "standard", league: "league scoring" }[ranking];
   const period = statsSeason < season
     ? `${statsSeason} previous-season regular-season totals`
-    : `${statsSeason} Week ${week} actual statistics only${statsSeason === liveSeason && nfl.season_type === "regular" && week === nfl.week ? " (current week; results may be partial)" : ""}`;
+    : `${statsSeason} Week ${statsWeek} actual statistics only${statsSeason === liveSeason && nfl.season_type === "regular" && statsWeek === nfl.week ? " (current week; results may be partial)" : ""}`;
   return {
     players, managers, season, week, leagueId,
     source: `Sleeper ${label} — ${period}; setup: ${season} week ${week}. All roster statuses; published player statistics. Out and IR excluded automatically; review other injuries and byes.`,

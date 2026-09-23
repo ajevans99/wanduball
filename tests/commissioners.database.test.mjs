@@ -39,12 +39,15 @@ test("commissioner SQL privileges, access, and real row-lock/CAS races", { skip:
     await context.test("weekly cleanup authorizes, fences workers, blocks bypass and atomically advances only verified outgoing targets", async () => {
       const live = "69103cd4-0f84-4ce1-b9d1-dfb3096771bc";
       query(await readFile(path.join(root, "supabase/migrations/202609170004_weekly_sleeper_cleanup.sql"), "utf8"));
+      query(await readFile(path.join(root, "supabase/migrations/202609230001_player_only_cleanup.sql"), "utf8"));
       const assignment = (id, position, week = 2) => ({ id, season: 2026, week, player: { id, position }, manager: { id: "4" }, applied: true, dropped: false });
       const targets = [assignment("100", "QB"), assignment("200", "RB"), assignment("300", "WR")];
       const state = { leagueId: "1389331555339468800", season: 2026, week: 2,
         assignments: [...targets, assignment("400", "TE"), assignment("500", "QB", 1)],
         rosterHistory: [{ transactionId: "source", player: { id: "600", position: "QB" } }],
-        changes: [], pending: { duration: null, ruleId: null }, lastSpin: null, players: [1], excluded: [], locked: [] };
+        changes: [{ rule: { duration: "Weekly" }, applied: false, reverted: false },
+          { rule: { duration: "Permanent" }, applied: false, reverted: false }],
+        pending: { duration: null, ruleId: null }, lastSpin: null, players: [1], excluded: [], locked: [] };
       query(`update public.rooms set state='${JSON.stringify(state)}',version=version+1 where id='${live}'`);
       let version = Number(query(`select version from public.rooms where id='${live}'`));
       const step = (phase, worker = null, id = null, evidence = null, actor = owner, expectedVersion = version) =>
@@ -55,8 +58,8 @@ test("commissioner SQL privileges, access, and real row-lock/CAS races", { skip:
       assert.equal(preview.targets.length, 3, "TE, prior assignments, and history excluded");
       const commitLive = next => `select public.commit_room_command('${live}','${owner}',${version},'${JSON.stringify(next)}')`;
       assert.throws(() => service(commitLive({ ...state, week: 3 })), /authenticated Sleeper cleanup/);
-      query(`update public.rooms set state=jsonb_set(state,'{changes}','[{"rule":{"duration":"Weekly"},"reverted":false}]'),version=version+1 where id='${live}'`);
-      assert.throws(() => service(step("acquire")), /scoring restores/);
+      query(`update public.rooms set state=jsonb_set(state,'{pending,duration}','"Weekly"'),version=version+1 where id='${live}'`);
+      assert.throws(() => service(step("acquire")), /Finish the current chaos round/);
       query(`update public.rooms set state='${JSON.stringify(state)}',version=version+1 where id='${live}'`);
       version += 2;
       const oldAdd = JSON.parse(service(`select public.claim_sleeper_player('${live}','${owner}','100',${version})`));
@@ -100,6 +103,7 @@ test("commissioner SQL privileges, access, and real row-lock/CAS races", { skip:
       assert.equal(result.room.state.week, 3);
       assert.equal(result.room.version, version + 1);
       assert.deepEqual(result.room.state.rosterHistory, state.rosterHistory);
+      assert.deepEqual(result.room.state.changes, state.changes, "cleanup ignores and preserves manual scoring records");
       assert.deepEqual(result.room.state.assignments.slice(3), state.assignments.slice(3));
       assert.ok(result.room.state.assignments.slice(0, 3).every(a => a.dropped));
       assert.equal(JSON.parse(service(step("acquire"))).completed, true, "lost finish response is safely recovered");

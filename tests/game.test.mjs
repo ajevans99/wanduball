@@ -121,30 +121,28 @@ test("points layout is shuffled once and the selected slice matches the saved va
   }
 });
 
-test("weekly cleanup must be completed before advancing and preserves history", () => {
+test("week advancement ignores manual scoring confirmations and preserves history", () => {
   const game = coordinator();
   game.run({ type: "lock", position: "RB" });
   for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "RB" });
   game.run({ type: "coin" });
   game.run({ type: "rule" });
   game.run({ type: "points" });
-  assert.throws(() => game.run({ type: "next-week" }), /Confirm/);
   const first = game.state.assignments[0];
   assert.throws(() => game.run({ type: "assignment-status", id: first.id, field: "dropped" }), /applied/);
   for (const assignment of game.state.assignments) {
     game.run({ type: "assignment-status", id: assignment.id, field: "applied" });
   }
-  const change = game.state.changes[0];
-  game.run({ type: "change-status", id: change.id, field: "applied" });
-  assert.throws(() => game.run({ type: "next-week" }), /Confirm/);
-  game.run({ type: "change-status", id: change.id, field: "reverted" });
+  const changes = structuredClone(game.state.changes);
   game.run({ type: "next-week" });
   assert.equal(game.state.week, 2);
   assert.equal(game.state.players.length, 0);
   assert.equal(game.state.assignments.length, 10);
   assert.ok(game.state.assignments.every(a => !a.dropped));
   assert.equal(currentAssignments(game.state).length, 0);
-  assert.equal(game.state.changes[0].reverted, true);
+  assert.deepEqual(game.state.changes, changes);
+  assert.equal(game.state.changes[0].applied, false);
+  assert.equal(game.state.changes[0].reverted, false);
 });
 
 test("permanent changes carry forward and cannot be marked reverted", () => {
@@ -156,6 +154,10 @@ test("permanent changes carry forward and cannot be marked reverted", () => {
   game.run({ type: "points" }, 2);
   const change = game.state.changes[0];
   assert.equal(change.rule.duration, "Permanent");
+  const changes = structuredClone(game.state.changes);
+  game.run({ type: "next-week" });
+  assert.equal(game.state.week, 2);
+  assert.deepEqual(game.state.changes, changes);
   game.run({ type: "change-status", id: change.id, field: "applied" });
   assert.throws(() => game.run({ type: "change-status", id: change.id, field: "reverted" }), /weekly rule/);
 });
