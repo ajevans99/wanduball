@@ -4,7 +4,7 @@ A fantasy-football league site built with Next.js, React, and Supabase.
 
 Import Sleeper rankings using the league's scoring, review the top ten QB/RB/WR pools, randomly assign players, and spin weekly or permanent scoring rules. Assignments and rules are saved by week. Shared rooms update live for spectators; commissioners control the action. TE assignments are currently disabled.
 
-Weekly setup separates the assignment week from the statistics week: Week 3 defaults to Week 2's actual statistics without changing the ledger. Shared rooms keep the assignment season/week fixed to the open round. You can select another published statistics week; no automatic fallback or season-to-date sum is used. The import API accepts optional `statsWeek`, defaulting to `week` for existing callers.
+Weekly setup ranks players by cumulative regular-season actual stats using the league's scoring (Sleeper Leaders > Season Stats), not weekly stats, projections, or season averages. The assignment week only controls the ledger; shared rooms keep it fixed to the open round. Week 1 retains an explicit previous-season fallback. Existing pools and assignments are unchanged until an allowed re-import. The import API no longer accepts `statsWeek`; older clients receive an error prompting a refresh.
 
 ## Run locally
 

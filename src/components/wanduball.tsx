@@ -113,9 +113,6 @@ function Game({ roomId }: {
     const fixedRound = Boolean(roomId || game.assignments.length || game.changes.length);
     const importSeason = fixedRound ? game.season : draftSeason;
     const importWeek = fixedRound ? game.week : draftWeek;
-    const [statistics, setStatistics] = useState<{ season: number; week: number; value: number } | null>(null);
-    const statsWeek = statistics?.season === importSeason && statistics.week === importWeek
-        ? statistics.value : Math.max(1, importWeek - 1);
     const canEdit = ready && !storageBlocked && (!roomId || Boolean(session && access?.canEdit));
     const spinning = Boolean(game.lastSpin && now < game.lastSpin.startedAt + spinDurationMs);
     const spinAssignment = game.assignments.find(a => a.id === game.lastSpin?.id);
@@ -378,7 +375,7 @@ function Game({ roomId }: {
         try {
             const data = await requestJson<Omit<Extract<Command, {
                 type: "import";
-            }>, "type">>(`/api/sleeper?leagueId=${encodeURIComponent(leagueId)}&season=${importSeason}&week=${importWeek}&statsSeason=${importWeek === 1 && previousSeasonFallback ? importSeason - 1 : importSeason}${importWeek === 1 && previousSeasonFallback ? "" : `&statsWeek=${statsWeek}`}&ranking=league`);
+            }>, "type">>(`/api/sleeper?leagueId=${encodeURIComponent(leagueId)}&season=${importSeason}&week=${importWeek}&statsSeason=${importWeek === 1 && previousSeasonFallback ? importSeason - 1 : importSeason}&ranking=league`);
             // Release the UI lock before sending the validated transition.
             setBusy(false);
             const command = commandSchema.parse({ ...data, type: "import" });
@@ -478,14 +475,13 @@ function Game({ roomId }: {
         </>}
 
         {tab === "setup" && <>
-          <section className="panel import-panel"><div><h3><ExternalLink size={18}/> Straight from the Sleeper swamp</h3><p>Selected statistics week&apos;s actual points using this league&apos;s Sleeper scoring. All roster statuses, ranked by position. Exclude injuries and byes manually.</p></div><form className="import-form" onSubmit={e => { e.preventDefault(); void importPlayers(); }}>
+          <section className="panel import-panel"><div><h3><ExternalLink size={18}/> Straight from the Sleeper swamp</h3><p>Cumulative season stats using this league&apos;s Sleeper scoring, matching Leaders → Season Stats. All roster statuses, ranked by position. Exclude injuries and byes manually.</p></div><form className="import-form" onSubmit={e => { e.preventDefault(); void importPlayers(); }}>
             <label className="wide">Sleeper league ID<input required pattern="[0-9]+" placeholder="e.g. 1234567890123456789" value={leagueId} onChange={e => setLeagueId(e.target.value)}/></label>
             <label>League season<input type="number" min="2020" max="2100" value={importSeason} readOnly={fixedRound} onChange={e => setImportSeason(Number(e.target.value))} required/></label>
             <label>Assignment week<input type="number" min="1" max="18" value={importWeek} readOnly={fixedRound} onChange={e => setImportWeek(Number(e.target.value))} required/></label>
-            {importWeek === 1 && <label>Week 1 statistics<select value={previousSeasonFallback ? "previous" : "current"} onChange={e => setPreviousSeasonFallback(e.target.value === "previous")}><option value="current">{importSeason} Week 1 actuals</option><option value="previous">{importSeason - 1} full-season fallback</option></select></label>}
-            {!(importWeek === 1 && previousSeasonFallback) && <label>Statistics week<input type="number" min="1" max={importWeek} value={statsWeek} onChange={e => setStatistics({ season: importSeason, week: importWeek, value: Number(e.target.value) })} required/></label>}
+            {importWeek === 1 && <label>Week 1 statistics<select value={previousSeasonFallback ? "previous" : "current"} onChange={e => setPreviousSeasonFallback(e.target.value === "previous")}><option value="current">{importSeason} season to date</option><option value="previous">{importSeason - 1} full-season fallback</option></select></label>}
             <button className="button dark" disabled={!canEdit || busy || Boolean(game.locked.length)}>{busy ? <LoaderCircle className="loading" size={16}/> : <ArrowDownToLine size={16}/>}Pull the players</button>
-          </form><small>Preparing assignment Week {importWeek} using {importWeek === 1 && previousSeasonFallback ? `${importSeason - 1} full-season totals` : `${importSeason} Week ${statsWeek} statistics`}. Statistics default to the previous week (Week 1 uses Week 1). Current-week results may be partial. Import does not change Sleeper or move the weekly ledger.</small></section>
+          </form><small>Preparing assignment Week {importWeek} using {importWeek === 1 && previousSeasonFallback ? `${importSeason - 1} full-season totals` : `${importSeason} cumulative season totals`}. Current games may be partial. Assignment week only controls the ledger, not the statistics period. Import does not change Sleeper or move the weekly ledger.</small></section>
           <div className="section-heading"><div><h2>The unwilling participants</h2><p>{game.source}</p></div><button className="button purple" disabled={!canEdit || busy || game.locked.includes(position) || selectedPool.length !== 10} onClick={() => void send({ type: "lock", position })}><LockKeyhole size={16}/>{game.locked.includes(position) ? `${position} pool locked` : `Lock ${position} top 10`}</button></div>
           <PositionTabs position={position} setPosition={setPosition} game={game}/>
           <p className="nickname-help">Nicknames are optional (up to {nicknameMaxLength} characters). Save an empty nickname or use Clear to remove it. Names carry into future imports; past assignments keep their original nickname. You can edit locked pools, but not during a countdown or spin.</p>

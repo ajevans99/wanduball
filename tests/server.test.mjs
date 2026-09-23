@@ -445,9 +445,7 @@ function sleeper(context, overrides = {}) {
     "league/123/users": Array.from({ length: 10 }, (_, i) => ({ user_id: String(i), display_name: `Owner ${i}`, metadata: null })),
     "league/123/rosters": Array.from({ length: 10 }, (_, i) => ({ roster_id: i + 1, owner_id: String(i) })),
     "players/nfl": dictionary,
-    "stats/nfl/regular/2026/1": stats,
-    "stats/nfl/regular/2026/2": stats,
-    "stats/nfl/regular/2026/3": stats,
+    "stats/nfl/regular/2026": stats,
     "stats/nfl/regular/2025": stats,
     ...overrides,
   };
@@ -468,7 +466,7 @@ function requestSleeper(route, search = query) {
   return route.GET(new Request(`http://localhost/api/sleeper?${search}`));
 }
 
-test("Sleeper requests the exact selected week, returns all candidates and preserves injuries", async context => {
+test("Sleeper requests cumulative season stats, returns all candidates and preserves injuries", async context => {
   const service = sleeper(context);
   const response = await requestSleeper(service.route);
   assert.equal(response.status, 200);
@@ -480,22 +478,22 @@ test("Sleeper requests the exact selected week, returns all candidates and prese
   assert.equal(result.managers.length, 10);
   assert.deepEqual(result.managers[0], { id: "1", name: "Owner 0" });
   assert.deepEqual(result.baselines, { rec: 1, rush_yd: 0.1 });
-  assert.match(result.source, /2026 Week 3 actual statistics only.*partial/);
+  assert.match(result.source, /2026 cumulative regular-season actual statistics.*partial/);
   assert.deepEqual(service.calls.filter(call => call.endpoint.startsWith("stats/")).map(call => call.endpoint).sort(), [
-    "stats/nfl/regular/2026/3",
+    "stats/nfl/regular/2026",
   ]);
   assert.equal(service.calls.find(call => call.endpoint === "players/nfl").init.next.revalidate, 86400);
 });
 
-test("Week 3 can import Week 2 actuals without moving the assignment ledger", async context => {
+test("Week 3 can import cumulative stats before Week 3 games without moving the ledger", async context => {
   const service = sleeper(context, { "state/nfl": { season: "2026", season_type: "regular", week: 2 } });
-  const response = await requestSleeper(service.route, `${query}&statsWeek=2`);
+  const response = await requestSleeper(service.route);
   assert.equal(response.status, 200);
   const result = await response.json();
   assert.equal(result.week, 3);
   assert.equal(result.season, 2026);
-  assert.match(result.source, /2026 Week 2 actual.*setup: 2026 week 3/);
-  assert.deepEqual(service.calls.filter(c => c.endpoint.startsWith("stats/")).map(c => c.endpoint), ["stats/nfl/regular/2026/2"]);
+  assert.match(result.source, /2026 cumulative regular-season actual.*setup: 2026 week 3/);
+  assert.deepEqual(service.calls.filter(c => c.endpoint.startsWith("stats/")).map(c => c.endpoint), ["stats/nfl/regular/2026"]);
   const load = loader();
   const state = load("src/lib/seed.ts").initialState();
   state.week = 2;
@@ -508,14 +506,13 @@ test("Week 3 can import Week 2 actuals without moving the assignment ledger", as
   assert.deepEqual(imported.assignments, assigned.assignments);
 });
 
-test("statistics weeks reject invalid, future, and full-season combinations", async context => {
+test("retired statistics-week input explicitly rejects stale clients", async context => {
   const service = sleeper(context);
-  for (const statsWeek of ["0", "19", "nope"]) {
-    assert.equal((await requestSleeper(service.route, `${query}&statsWeek=${statsWeek}`)).status, 400);
+  for (const statsWeek of ["0", "2", "19", "nope"]) {
+    const response = await requestSleeper(service.route, `${query}&statsWeek=${statsWeek}`);
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /statsWeek is no longer supported/);
   }
-  assert.equal((await requestSleeper(service.route, `${query}&statsWeek=4`)).status, 422);
-  assert.equal((await requestSleeper(service.route, query.replace("week=3", "week=5") + "&statsWeek=4")).status, 422);
-  assert.equal((await requestSleeper(service.route, "leagueId=123&season=2026&week=1&statsSeason=2025&statsWeek=1")).status, 422);
 });
 
 test("Sleeper explicit previous-season totals keep game setup season/week distinct", async context => {
@@ -531,13 +528,13 @@ test("Sleeper explicit previous-season totals keep game setup season/week distin
   assert.equal(service.calls.filter(call => call.endpoint.startsWith("stats/")).length, 1);
 });
 
-test("Sleeper permits Week 1 actuals, rejects future weeks and stale Week N seasons", async context => {
+test("assignment week does not restrict season statistics; stale fallback seasons remain blocked", async context => {
   const service = sleeper(context);
   let response = await requestSleeper(service.route, query.replace("week=3", "week=1"));
   assert.equal(response.status, 200);
-  assert.match((await response.json()).source, /2026 Week 1 actual/);
+  assert.match((await response.json()).source, /2026 cumulative regular-season actual/);
   response = await requestSleeper(service.route, query.replace("week=3", "week=4"));
-  assert.equal(response.status, 422);
+  assert.equal(response.status, 200);
   assert.equal((await requestSleeper(service.route, query.replace("statsSeason=2026", "statsSeason=2025"))).status, 422);
   assert.equal((await requestSleeper(service.route, query.replace("leagueId=123", "leagueId=not-a-league"))).status, 400);
 });
@@ -559,7 +556,7 @@ test("Sleeper rejects missing scoring baselines rather than resetting them to ze
 });
 
 test("Sleeper does not replace missing statistics with zero or demo scores", async context => {
-  const service = sleeper(context, { "stats/nfl/regular/2026/3": {} });
+  const service = sleeper(context, { "stats/nfl/regular/2026": {} });
   const response = await requestSleeper(service.route);
   assert.equal(response.status, 422);
   assert.match((await response.json()).error, /no actual fantasy statistics/);
@@ -579,12 +576,12 @@ test("league scoring is the default, includes unrostered, zero and negative cand
   const response = await requestSleeper(service.route, query.replace("&ranking=ppr", "").replace("week=3", "week=2"));
   assert.equal(response.status, 200);
   const result = await response.json();
-  assert.match(result.source, /league scoring.*2026 Week 2 actual.*All roster statuses/);
+  assert.match(result.source, /league scoring.*2026 cumulative regular-season actual.*All roster statuses/);
   assert.equal(result.players.length, 140);
   assert.equal(result.players[0].points, 0);
   assert.equal(result.players[34].points, -34);
   assert.equal(result.players[34].id, "QB-34");
-  assert.deepEqual(service.calls.filter(call => call.endpoint.startsWith("stats/")).map(call => call.endpoint), ["stats/nfl/regular/2026/2"]);
+  assert.deepEqual(service.calls.filter(call => call.endpoint.startsWith("stats/")).map(call => call.endpoint), ["stats/nfl/regular/2026"]);
 });
 
 test("unsupported nonzero league settings fail closed; zero unknown settings are harmless", async context => {
