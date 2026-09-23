@@ -4,6 +4,8 @@ A fantasy-football league site built with Next.js, React, and Supabase.
 
 Import Sleeper rankings using the league's scoring, review the top ten QB/RB/WR pools, randomly assign players, and spin weekly or permanent scoring rules. Assignments and rules are saved by week. Shared rooms update live for spectators; commissioners control the action. TE assignments are currently disabled.
 
+Weekly setup separates the assignment week from the statistics week: Week 3 defaults to Week 2's actual statistics without changing the ledger. Shared rooms keep the assignment season/week fixed to the open round. You can select another published statistics week; no automatic fallback or season-to-date sum is used. The import API accepts optional `statsWeek`, defaulting to `week` for existing callers.
+
 ## Run locally
 
 Use Node.js 22.
@@ -47,7 +49,7 @@ Roster writes use Sleeper's unofficial GraphQL API and are restricted to an expl
 
 Deploy the `sleeper-player` Edge Function and configure `SLEEPER_SESSION_TOKEN`, `SLEEPER_USER_ID`, and `SLEEPER_LEAGUE_ID` as Supabase Edge secrets. Never put the session token or service-role key in browser variables, room data, or source control.
 
-The connected room verifies roster membership, supports single/bulk adds, and automatically adds newly spun players from Week 3 onward. Advancing a week drops the outgoing assigned QB/RB/WR players before opening the next round. Players moved to another team block cleanup for commissioner review. Scoring changes and lineup edits remain manual in Sleeper.
+The connected room verifies roster membership, supports single/bulk adds, and automatically adds newly spun players from Week 3 onward. Advancing a week drops the outgoing assigned QB/RB/WR players before opening the next round, skipping players already absent. Players moved to another team block cleanup for commissioner review. Scoring changes and lineup edits remain manual in Sleeper. Scoring application/restore confirmations do not block week advancement, and cleanup leaves rule records unchanged.
 
 ## Checks
 

@@ -90,7 +90,7 @@ test("nicknames survive repeated Sleeper imports and next week's empty pool by s
   expect((await savedState(page)).players).toHaveLength(0);
   expect((await savedState(page)).nicknames).toEqual(nicknames);
   await setup(page);
-  await page.getByLabel("Week", { exact: true }).fill("2");
+  await page.getByLabel("Assignment week", { exact: true }).fill("2");
   await page.getByRole("button", { name: "Pull the players" }).click();
   await expect(page.getByText("Sleeper nickname fixture 3", { exact: true })).toBeVisible();
   for (const position of ["QB", "RB", "WR"] as const) {

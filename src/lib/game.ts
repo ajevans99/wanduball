@@ -112,10 +112,6 @@ export function isCurrent(state: GameState, item: {
 export function currentAssignments(state: GameState, position?: Position) {
     return state.assignments.filter(a => isCurrent(state, a) && (!position || a.player.position === position));
 }
-export function hasCleanup(state: GameState) {
-    return state.changes.some(c => c.rule.duration === "Weekly" && !c.reverted)
-        || state.changes.some(c => c.rule.duration === "Permanent" && !c.applied);
-}
 // A single transition function is used by local practice and the authoritative server.
 export function transition(state: GameState, command: Command, random: (max: number) => number, now = Date.now()): GameState {
     const s = structuredClone(state);
@@ -259,8 +255,6 @@ export function transition(state: GameState, command: Command, random: (max: num
         case "next-week":
             if (s.week === 18)
                 throw new Error("Season complete! Export the ledger before starting a new season.");
-            if (hasCleanup(s))
-                throw new Error("Confirm weekly scoring restores and permanent rule applications first.");
             if (s.pending.duration)
                 throw new Error("Finish the current chaos round first.");
             s.week += 1;

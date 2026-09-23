@@ -487,6 +487,37 @@ test("Sleeper requests the exact selected week, returns all candidates and prese
   assert.equal(service.calls.find(call => call.endpoint === "players/nfl").init.next.revalidate, 86400);
 });
 
+test("Week 3 can import Week 2 actuals without moving the assignment ledger", async context => {
+  const service = sleeper(context, { "state/nfl": { season: "2026", season_type: "regular", week: 2 } });
+  const response = await requestSleeper(service.route, `${query}&statsWeek=2`);
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.week, 3);
+  assert.equal(result.season, 2026);
+  assert.match(result.source, /2026 Week 2 actual.*setup: 2026 week 3/);
+  assert.deepEqual(service.calls.filter(c => c.endpoint.startsWith("stats/")).map(c => c.endpoint), ["stats/nfl/regular/2026/2"]);
+  const load = loader();
+  const state = load("src/lib/seed.ts").initialState();
+  state.week = 2;
+  const { transition } = load("src/lib/game.ts");
+  const locked = transition(state, { type: "lock", position: "QB" }, () => 0, 0);
+  const assigned = transition(locked, { type: "assign", position: "QB" }, () => 0, 1);
+  const next = transition(assigned, { type: "next-week" }, () => 0, 10000);
+  const imported = transition(next, { type: "import", ...result }, () => 0, 20000);
+  assert.equal(imported.week, 3);
+  assert.deepEqual(imported.assignments, assigned.assignments);
+});
+
+test("statistics weeks reject invalid, future, and full-season combinations", async context => {
+  const service = sleeper(context);
+  for (const statsWeek of ["0", "19", "nope"]) {
+    assert.equal((await requestSleeper(service.route, `${query}&statsWeek=${statsWeek}`)).status, 400);
+  }
+  assert.equal((await requestSleeper(service.route, `${query}&statsWeek=4`)).status, 422);
+  assert.equal((await requestSleeper(service.route, query.replace("week=3", "week=5") + "&statsWeek=4")).status, 422);
+  assert.equal((await requestSleeper(service.route, "leagueId=123&season=2026&week=1&statsSeason=2025&statsWeek=1")).status, 422);
+});
+
 test("Sleeper explicit previous-season totals keep game setup season/week distinct", async context => {
   const service = sleeper(context);
   const response = await requestSleeper(service.route, "leagueId=123&season=2026&week=1&statsSeason=2025&ranking=std");
