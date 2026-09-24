@@ -16,7 +16,7 @@ export function failure(error: unknown) {
   return json({ error: "The service is temporarily unavailable. Please try again." }, 503);
 }
 
-export async function readJson(request: Request): Promise<unknown> {
+export async function readJson(request: Request, maxBytes = 256 * 1024): Promise<unknown> {
   const reader = request.body?.getReader();
   if (!reader) throw new HttpError(400, "A JSON request body is required.");
   const chunks: Uint8Array[] = [];
@@ -26,9 +26,9 @@ export async function readJson(request: Request): Promise<unknown> {
       const { done, value } = await reader.read();
       if (done) break;
       length += value.byteLength;
-      if (length > 256 * 1024) {
+      if (length > maxBytes) {
         await reader.cancel();
-        throw new HttpError(413, "The request is too large (maximum 256 KB).");
+        throw new HttpError(413, `The request is too large (maximum ${maxBytes / 1024} KB).`);
       }
       chunks.push(value);
     }

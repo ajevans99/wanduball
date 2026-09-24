@@ -207,7 +207,7 @@ test("room invalid input, invalid transitions, oversized payloads and missing ro
   assert.equal((await db.route.GET(new Request("http://localhost/api/room?room=bad"))).status, 400);
   assert.equal((await db.route.GET(new Request("http://localhost/api/room?room=079507ab-716d-4a06-b193-62f070e70408"))).status, 404);
   assert.equal((await db.route.POST(post("{"))).status, 400);
-  assert.equal((await db.route.POST(post("x".repeat(256 * 1024 + 1)))).status, 413);
+  assert.equal((await db.route.POST(post("x".repeat(1024 * 1024 + 1)))).status, 413);
   const invalid = await db.route.POST(post({
     type: "command", roomId, version: 0, command: { type: "assign", position: "QB" },
   }));
@@ -427,6 +427,29 @@ test("unconfigured commissioner access returns 503", async context => {
     assert.equal(response.status, 503);
     assert.match((await response.json()).error, /not configured/);
   }
+});
+
+test("authenticated room imports accept full-season candidate lists above 256 KB", async context => {
+  const db = database(context);
+  const original = db.row().state;
+  const players = Array.from({ length: 3045 }, (_, i) => ({
+    ...original.players[0], id: String(i + 1), name: `Season candidate ${i}`,
+  }));
+  const body = { type: "command", roomId, version: 0, command: {
+    type: "import", players, managers: original.managers,
+    season: original.season, week: original.week, leagueId: "123",
+    source: "Cumulative regular-season actual statistics",
+  } };
+  const size = Buffer.byteLength(JSON.stringify(body));
+  assert.ok(size > 256 * 1024 && size < 1024 * 1024, `actual test payload: ${size}`);
+  const response = await db.route.POST(post(body));
+  assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+  assert.equal(db.row().state.players.length, 3045);
+});
+
+test("other JSON endpoints retain their 256 KB default limit", async () => {
+  const { readJson } = loader()("src/lib/server/http.ts");
+  await assert.rejects(readJson(post("x".repeat(256 * 1024 + 1))), /maximum 256 KB/);
 });
 
 function sleeper(context, overrides = {}) {

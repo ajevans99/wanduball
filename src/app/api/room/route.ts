@@ -39,7 +39,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const userId = await authenticate(request);
-    const parsed = requestSchema.safeParse(await readJson(request));
+    // Full-season imports include every candidate, not just the top ten.
+    const parsed = requestSchema.safeParse(await readJson(request, 1024 * 1024));
     if (!parsed.success) throw new HttpError(400, "Invalid room request or command.");
     const body = parsed.data;
     const database = roomClient(true);
