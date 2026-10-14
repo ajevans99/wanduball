@@ -36,6 +36,11 @@ const nflSchema = z.object({
   season_type: z.string(),
   week: z.number().int(),
 });
+const scheduleSchema = z.array(z.object({
+  week: z.number().int().min(1).max(18),
+  home: z.string().min(1),
+  away: z.string().min(1),
+}));
 
 export const sleeperQuerySchema = z.object({
   leagueId: z.string().regex(/^\d{1,30}$/),
@@ -49,7 +54,7 @@ export const sleeperQuerySchema = z.object({
 async function upstream<T>(path: string, schema: z.ZodType<T>, revalidate = 300): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`https://api.sleeper.app/v1/${path}`, {
+    response = await fetch(`https://api.sleeper.app${path.startsWith("/") ? path : `/v1/${path}`}`, {
       next: { revalidate },
       signal: AbortSignal.timeout(15_000),
     });
@@ -83,6 +88,27 @@ function nflPlayers() {
     void value.catch(() => { if (playerCache === entry) playerCache = undefined; });
   }
   return playerCache.value;
+}
+
+async function byeTeams(season: number, week: number) {
+  const seasonWeeks = season === 2020 ? 17 : 18;
+  if (week > seasonWeeks) throw new HttpError(422, "The selected assignment week is outside this NFL regular season.");
+  const schedule = await upstream(`/schedule/nfl/regular/${season}`, scheduleSchema, 3600);
+  const weeksByTeam = new Map<string, Set<number>>();
+  for (const game of schedule) {
+    if (game.home === game.away || game.week > seasonWeeks) {
+      throw new HttpError(502, "Sleeper returned an invalid NFL schedule. Bye weeks could not be verified; no players were imported.");
+    }
+    for (const team of [game.home, game.away]) {
+      if (!weeksByTeam.has(team)) weeksByTeam.set(team, new Set());
+      weeksByTeam.get(team)!.add(game.week);
+    }
+  }
+  // Missing games must not turn an unpublished or partial schedule into false byes.
+  if (weeksByTeam.size !== 32 || [...weeksByTeam.values()].some(weeks => weeks.size !== seasonWeeks - 1)) {
+    throw new HttpError(502, "Sleeper's NFL schedule is incomplete. Bye weeks could not be verified; retry after the full schedule is published.");
+  }
+  return new Set([...weeksByTeam].filter(([, weeks]) => !weeks.has(week)).map(([team]) => team));
 }
 
 export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
@@ -133,9 +159,10 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
   });
   const scoreKey = `pts_${ranking}`;
   const paths = [`stats/nfl/regular/${statsSeason}`];
-  const [dictionary, periods] = await Promise.all([
+  const [dictionary, periods, byes] = await Promise.all([
     nflPlayers(),
     Promise.all(paths.map(path => upstream(path, statsSchema, 3600))),
+    byeTeams(season, week),
   ]);
   const totals = new Map<string, number>();
   for (const stats of periods) {
@@ -161,6 +188,7 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
       id, name, points: Math.round(points * 100) / 100,
       position: player.position as Position,
       team: player.team ?? "FA", injury: player.injury_status ?? null,
+      bye: byes.has(player.team ?? ""),
     });
   }
   const players = positions.flatMap(position => candidates.filter(p => p.position === position)
@@ -174,7 +202,22 @@ export async function importSleeper(query: z.infer<typeof sleeperQuerySchema>) {
     : `${statsSeason} cumulative regular-season actual statistics${statsSeason === liveSeason && nfl.season_type === "regular" ? " (season to date; current games may be partial)" : ""}`;
   return {
     players, managers, season, week, leagueId,
-    source: `Sleeper ${label} — ${period}; setup: ${season} week ${week}. All roster statuses; published player statistics. Out and IR excluded automatically; review other injuries and byes.`,
+    byeTeams: [...byes],
+    source: `Sleeper ${label} — ${period}; setup: ${season} week ${week}. All roster statuses; published player statistics. Out, IR and bye-week players excluded automatically; review other injuries.`,
     baselines: league.scoring_settings,
   };
+}
+
+export async function verifyPlayerAbsent(leagueId: string, playerId: string) {
+  const membershipSchema = z.array(z.object({
+    roster_id: z.number().int(),
+    players: z.array(z.string()).nullable(),
+    reserve: z.array(z.string()).nullish(),
+    taxi: z.array(z.string()).nullish(),
+  })).length(10);
+  const rosters = await upstream(`league/${leagueId}/rosters`, membershipSchema, 0);
+  if (new Set(rosters.map(r => r.roster_id)).size !== 10)
+    throw new HttpError(502, "Sleeper roster membership could not be verified. No assignment was replaced.");
+  if (rosters.some(r => [...(r.players ?? []), ...(r.reserve ?? []), ...(r.taxi ?? [])].includes(playerId)))
+    throw new HttpError(422, "Remove the original bye-week player from Sleeper first, then retry the replacement. No roster changes were made.");
 }

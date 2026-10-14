@@ -1,9 +1,11 @@
 import { randomInt } from "node:crypto";
 import { z } from "zod";
-import { commandSchema, stateSchema, transition } from "@/lib/game";
+import { commandSchema, isCurrent, stateSchema, transition, type ByeReplacementEvidence } from "@/lib/game";
 import { initialState } from "@/lib/seed";
 import { failure, HttpError, json, readJson } from "@/lib/server/http";
 import { authenticate, roomClient } from "@/lib/server/supabase";
+import { importSleeper, verifyPlayerAbsent } from "@/lib/server/sleeper";
+import { sleeperLiveRoomId } from "@/lib/sleeper-auto";
 
 export const runtime = "nodejs";
 
@@ -76,9 +78,24 @@ export async function POST(request: Request) {
     }
     if (current.version !== body.version) throw new HttpError(409, "The room changed. Refresh it before trying again.");
 
+    let byeEvidence: ByeReplacementEvidence | undefined;
+    if (body.command.type === "replace-bye-assignment") {
+      const assignmentId = body.command.id;
+      const assignment = current.state.assignments.find(a => a.id === assignmentId);
+      if (!assignment || !isCurrent(current.state, assignment) || assignment.replacedByAssignmentId)
+        throw new HttpError(422, "Only an unreplaced assignment in the current week can be corrected.");
+      const fresh = await importSleeper({
+        leagueId: current.state.leagueId, season: current.state.season, week: current.state.week, ranking: "league",
+      });
+      byeEvidence = fresh;
+      if (body.roomId === sleeperLiveRoomId) {
+        await verifyPlayerAbsent(current.state.leagueId, assignment.player.id);
+        byeEvidence.originalAbsent = true;
+      }
+    }
     let state;
     try {
-      state = stateSchema.parse(transition(current.state, body.command, randomInt));
+      state = stateSchema.parse(transition(current.state, body.command, randomInt, Date.now(), byeEvidence));
     } catch (error) {
       throw new HttpError(422, error instanceof Error ? error.message : "That command is not allowed.");
     }

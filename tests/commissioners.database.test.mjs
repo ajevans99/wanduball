@@ -40,6 +40,7 @@ test("commissioner SQL privileges, access, and real row-lock/CAS races", { skip:
       const live = "69103cd4-0f84-4ce1-b9d1-dfb3096771bc";
       query(await readFile(path.join(root, "supabase/migrations/202609170004_weekly_sleeper_cleanup.sql"), "utf8"));
       query(await readFile(path.join(root, "supabase/migrations/202609230001_player_only_cleanup.sql"), "utf8"));
+      query(await readFile(path.join(root, "supabase/migrations/202610070001_bye_assignment_corrections.sql"), "utf8"));
       const assignment = (id, position, week = 2) => ({ id, season: 2026, week, player: { id, position }, manager: { id: "4" }, applied: true, dropped: false });
       const targets = [assignment("100", "QB"), assignment("200", "RB"), assignment("300", "WR")];
       const state = { leagueId: "1389331555339468800", season: 2026, week: 2,
@@ -118,6 +119,63 @@ test("commissioner SQL privileges, access, and real row-lock/CAS races", { skip:
         assert.throws(() => query(`set role ${role}; select * from public.sleeper_drop_claims`));
         assert.throws(() => query(`set role ${role}; ${step("acquire")}`));
       }
+    });
+    await context.test("bye corrections retain protected history and require only the replacement before cleanup", () => {
+      const live = "69103cd4-0f84-4ce1-b9d1-dfb3096771bc";
+      query(`update public.sleeper_apply_claims set status='verified' where room_id='${live}'`);
+      const original = { id: "old-bye", season: 2026, week: 5,
+        player: { id: "777", position: "QB" }, manager: { id: "4" }, applied: false, dropped: false };
+      const state = { leagueId: "1389331555339468800", season: 2026, week: 5,
+        assignments: [original], pending: { duration: null, ruleId: null }, changes: [],
+        lastSpin: { id: original.id, startedAt: 0 }, players: [], excluded: [], locked: ["QB"] };
+      query(`update public.rooms set state='${JSON.stringify(state)}',version=version+1 where id='${live}'`);
+      let version = Number(query(`select version from public.rooms where id='${live}'`));
+      const corrected = {
+        ...state, assignments: [
+          { ...original, dropped: true, replacedByAssignmentId: "replacement", replacedAt: 12345 },
+          { ...original, id: "replacement", player: { id: "888", position: "QB" }, replacesAssignmentId: original.id },
+        ],
+      };
+      const commitCorrection = (next, actor = owner) =>
+        `select public.commit_room_command('${live}','${actor}',${version},'${JSON.stringify(next)}')`;
+      assert.throws(() => service(commitCorrection(corrected, spectator)), /Commissioner/);
+      const saved = JSON.parse(service(commitCorrection(corrected)));
+      version = saved.version;
+      assert.equal(saved.state.assignments[0].applied, false, "correction doesn't fabricate old application");
+      assert.throws(() => service(commitCorrection({ ...corrected, assignments: corrected.assignments.slice(1) })), /history and links/);
+      assert.throws(() => service(commitCorrection({
+        ...corrected, assignments: corrected.assignments.map(a => a.id === original.id ? { ...a, dropped: false } : a),
+      })), /history and links/);
+      const legacy = { ...corrected, assignments: corrected.assignments.map(a => {
+        const copy = { ...a };
+        delete copy.replacesAssignmentId;
+        delete copy.replacedByAssignmentId;
+        delete copy.replacedAt;
+        return copy;
+      }) };
+      const preserved = JSON.parse(service(commitCorrection(legacy)));
+      assert.deepEqual(preserved.state.assignments, corrected.assignments);
+      version = preserved.version;
+      const step = (phase, worker = null, id = null, evidence = null) =>
+        `select public.sleeper_cleanup_step('${live}','${owner}',2026,5,${version},'${phase}',${worker ? `'${worker}'` : "null"},${id ? `'${id}'` : "null"},null,${evidence ? `'${evidence}'` : "null"})`;
+      assert.throws(() => service(step("preview")), /pending Sleeper adds/, "replacement must be applied separately");
+      const claim = JSON.parse(service(`select public.claim_sleeper_player('${live}','${owner}','replacement',${version})`));
+      service(`select public.verify_sleeper_player('${claim.id}','${owner}')`);
+      version = Number(query(`select version from public.rooms where id='${live}'`));
+      const preview = JSON.parse(service(step("preview")));
+      assert.equal(preview.targets.length, 2, "old and new players remain cleanup targets");
+      const operation = JSON.parse(service(step("acquire")));
+      for (const id of ["old-bye", "replacement"]) {
+        service(step("claim", operation.worker, id));
+        service(step("verify", operation.worker, id, "already-absent"));
+      }
+      const finished = JSON.parse(service(step("finish", operation.worker)));
+      assert.equal(finished.room.state.week, 6);
+      assert.equal(finished.room.state.assignments[0].replacedByAssignmentId, "replacement");
+      assert.equal(finished.room.state.assignments[1].replacesAssignmentId, "old-bye");
+      assert.equal(finished.room.state.assignments[0].applied, false);
+      assert.ok(finished.room.state.assignments.every(a => a.dropped));
+      assert.throws(() => service(`select public.commit_room_command_before_bye_corrections('${live}','${owner}',${version},'{}')`), /permission denied/);
     });
   };
   execFileSync(path.join(pgBin, "initdb"), ["-D", `${directory}/data`, "-U", "postgres", "--auth=trust", "--no-locale"], { stdio: "pipe" });

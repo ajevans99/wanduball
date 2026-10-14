@@ -15,6 +15,7 @@ export const playerSchema = z.object({
     team: z.string(),
     points: z.number().finite(),
     injury: z.string().nullable(),
+    bye: z.boolean().optional(),
 });
 export type Player = z.infer<typeof playerSchema>;
 export const ruleSchema = z.object({
@@ -41,6 +42,9 @@ const assignmentSchema = z.object({
     player: playerSchema, manager: managerSchema,
     nickname: nicknameSchema.min(1).optional(),
     awardedWithSpinId: z.string().optional(),
+    replacesAssignmentId: z.string().optional(),
+    replacedByAssignmentId: z.string().optional(),
+    replacedAt: z.number().optional(),
     applied: z.boolean(), dropped: z.boolean(),
 });
 const changeSchema = z.object({
@@ -84,6 +88,7 @@ export const commandSchema = z.discriminatedUnion("type", [
     z.object({ type: z.literal("rule") }),
     z.object({ type: z.literal("points") }),
     z.object({ type: z.literal("assignment-status"), id: z.string(), field: z.enum(["applied", "dropped"]) }),
+    z.object({ type: z.literal("replace-bye-assignment"), id: z.string().min(1), confirmRemoved: z.boolean().default(false) }),
     z.object({ type: z.literal("change-status"), id: z.string(), field: z.enum(["applied", "reverted"]) }),
     z.object({ type: z.literal("next-week") }),
     z.object({ type: z.literal("add-rule"), rule: ruleSchema }),
@@ -99,8 +104,11 @@ export type Command = z.infer<typeof commandSchema>;
 export function playerLabel(player: Player, nickname?: string) {
     return nickname ? `${nickname} (${player.name})` : player.name;
 }
+function automaticallyExcluded(player: Player) {
+    return player.bye || ["out", "ir", "injured reserve"].includes(player.injury?.trim().toLowerCase() ?? "");
+}
 export function pool(state: GameState, position: Position) {
-    return state.players.filter(p => p.position === position && !state.excluded.includes(p.id))
+    return state.players.filter(p => p.position === position && !p.bye && !state.excluded.includes(p.id))
         .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name)).slice(0, 10);
 }
 export function isCurrent(state: GameState, item: {
@@ -110,10 +118,15 @@ export function isCurrent(state: GameState, item: {
     return item.week === state.week && item.season === state.season;
 }
 export function currentAssignments(state: GameState, position?: Position) {
-    return state.assignments.filter(a => isCurrent(state, a) && (!position || a.player.position === position));
+    return state.assignments.filter(a => isCurrent(state, a) && !a.replacedByAssignmentId && (!position || a.player.position === position));
 }
+export type ByeReplacementEvidence = {
+    players: Player[];
+    byeTeams: string[];
+    originalAbsent?: boolean;
+};
 // A single transition function is used by local practice and the authoritative server.
-export function transition(state: GameState, command: Command, random: (max: number) => number, now = Date.now()): GameState {
+export function transition(state: GameState, command: Command, random: (max: number) => number, now = Date.now(), byeEvidence?: ByeReplacementEvidence): GameState {
     const s = structuredClone(state);
     const id = crypto.randomUUID();
     const spinning = s.lastSpin && now < s.lastSpin.startedAt + spinDurationMs;
@@ -142,6 +155,8 @@ export function transition(state: GameState, command: Command, random: (max: num
             const player = s.players.find(p => p.id === command.playerId);
             if (!player)
                 throw new Error("Player not found.");
+            if (player.bye)
+                throw new Error("Players on a bye week cannot be included in this week's pool.");
             if (s.locked.includes(player.position))
                 throw new Error("This position's pool is already locked.");
             s.excluded = s.excluded.includes(player.id) ? s.excluded.filter(i => i !== player.id) : [...s.excluded, player.id];
@@ -230,10 +245,46 @@ export function transition(state: GameState, command: Command, random: (max: num
             s.pending = { duration: null, ruleId: null };
             break;
         }
+        case "replace-bye-assignment": {
+            const original = s.assignments.find(a => a.id === command.id);
+            if (!original || !isCurrent(s, original) || original.replacedByAssignmentId)
+                throw new Error("Only an unreplaced assignment in the current week can be corrected.");
+            if (!enabledPositions.includes(original.player.position))
+                throw new Error("Tight end assignments are disabled for now.");
+            if (!byeEvidence)
+                throw new Error("Verify the NFL schedule and fresh rankings before replacing a bye assignment.");
+            if (!byeEvidence.byeTeams.includes(original.player.team))
+                throw new Error("This player was not assigned to a team on a bye in this week's NFL schedule.");
+            if (original.applied && !original.dropped && !command.confirmRemoved && !byeEvidence.originalAbsent)
+                throw new Error("Remove the original player from Sleeper and confirm removal before replacing this assignment.");
+            const awarded = s.assignments.filter(a => isCurrent(s, a)).map(a => a.player.id);
+            const replacement = byeEvidence.players
+                .filter(p => p.position === original.player.position && !automaticallyExcluded(p)
+                    && !byeEvidence.byeTeams.includes(p.team) && !awarded.includes(p.id)
+                    && !s.excluded.includes(p.id))
+                .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name) || a.id.localeCompare(b.id))[0];
+            if (!replacement)
+                throw new Error("No eligible unassigned replacement is available for this position.");
+            original.dropped = true;
+            original.replacedByAssignmentId = id;
+            original.replacedAt = now;
+            s.excluded = [...new Set([...s.excluded, original.player.id])];
+            s.players = s.players.map(p => p.id === original.player.id ? { ...p, bye: true } : p);
+            if (!s.players.some(p => p.id === replacement.id)) s.players.push(replacement);
+            const nickname = s.nicknames?.[replacement.id];
+            s.assignments.push({
+                id, week: s.week, season: s.season, player: replacement, manager: original.manager,
+                replacesAssignmentId: original.id, ...(nickname ? { nickname } : {}),
+                applied: false, dropped: false,
+            });
+            break;
+        }
         case "assignment-status": {
             const assignment = s.assignments.find(a => a.id === command.id);
             if (!assignment)
                 throw new Error("Assignment not found.");
+            if (assignment.replacedByAssignmentId)
+                throw new Error("Replaced assignments are read-only history.");
             if (command.field === "dropped" && !assignment.applied)
                 throw new Error("Confirm the assignment was applied in Sleeper before marking it dropped.");
             if (command.field === "applied" && assignment.dropped)
@@ -281,7 +332,7 @@ export function transition(state: GameState, command: Command, random: (max: num
             s.managers = command.managers;
             s.source = command.source;
             s.excluded = command.players
-                .filter(player => ["out", "ir", "injured reserve"].includes(player.injury?.trim().toLowerCase() ?? ""))
+                .filter(automaticallyExcluded)
                 .map(player => player.id);
             if (command.baselines && !s.changes.length) {
                 s.rules = s.rules.map(rule => ({

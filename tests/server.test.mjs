@@ -31,7 +31,7 @@ function loader() {
     const localRequire = specifier => {
       if (specifier === "server-only") return {};
       if (specifier.startsWith("@/")) return load(`src/${specifier.slice(2)}.ts`);
-      if (specifier.startsWith(".")) return load(path.resolve(path.dirname(filename), `${specifier}.ts`));
+      if (specifier.startsWith(".")) return load(path.resolve(path.dirname(filename), specifier.endsWith(".ts") ? specifier : `${specifier}.ts`));
       return require(specifier);
     };
     compileFunction(outputText, ["exports", "require", "module"], { filename })(compiled.exports, localRequire, compiled);
@@ -77,7 +77,8 @@ function accessRequest(token = "owner-token", id = roomId) {
 function database(context, options = {}) {
   configure(context);
   const load = loader();
-  let row = { id: roomId, owner_id: ownerId, state: load("src/lib/seed.ts").initialState(), version: 0 };
+  const targetRoomId = options.roomId ?? roomId;
+  let row = { id: targetRoomId, owner_id: ownerId, state: load("src/lib/seed.ts").initialState(), version: 0 };
   const members = new Set(options.members ?? []);
   const users = new Map([
     [ownerId, { email: "owner@example.com", confirmed: true }],
@@ -98,6 +99,12 @@ function database(context, options = {}) {
     const url = new URL(input);
     const method = init?.method ?? "GET";
     calls.push({ url, method, init });
+    if (url.hostname === "api.sleeper.app") {
+      const endpoint = url.pathname.replace("/v1/", "");
+      assert.ok(endpoint in options.sleeperPayloads, `unexpected Sleeper request: ${endpoint}`);
+      const value = options.sleeperPayloads[endpoint];
+      return value instanceof Response ? value : Response.json(value);
+    }
     if (options.errorFor?.(url.pathname)) return rpcError("XX000", 500);
     if (url.pathname === "/auth/v1/user") {
       const token = new Headers(init.headers).get("authorization");
@@ -113,7 +120,7 @@ function database(context, options = {}) {
       assert.equal(method, "POST");
       assert.equal(new Headers(init.headers).get("apikey"), "server-test-key");
       const body = JSON.parse(init.body);
-      if (body.p_room_id !== roomId) return rpcError("PT404", 404);
+      if (body.p_room_id !== targetRoomId) return rpcError("PT404", 404);
       if (url.pathname.endsWith("/room_commissioner_access")) {
         return Response.json(access(body.p_user_id));
       }
@@ -154,7 +161,7 @@ function database(context, options = {}) {
     }
     assert.equal(method, "GET", "game updates must use the atomic authorization/CAS RPC");
     // Return snapshots so two commands can read the same version before CAS.
-    return Response.json(url.searchParams.get("id") === `eq.${roomId}` ? [row] : []);
+    return Response.json(url.searchParams.get("id") === `eq.${targetRoomId}` ? [row] : []);
   });
   return {
     route: load("src/app/api/room/route.ts"),
@@ -452,7 +459,16 @@ test("other JSON endpoints retain their 256 KB default limit", async () => {
   await assert.rejects(readJson(post("x".repeat(256 * 1024 + 1))), /maximum 256 KB/);
 });
 
-function sleeper(context, overrides = {}) {
+function scheduleFixture() {
+  const teams = ["KC", "CAR", ...Array.from({ length: 30 }, (_, i) => `TEAM${i}`)];
+  return Array.from({ length: 18 }, (_, i) => i + 1).flatMap(week =>
+    Array.from({ length: 16 }, (_, i) => ({
+      week, home: teams[i * 2], away: teams[i * 2 + 1],
+    })).filter((_, i) => week !== (i === 0 ? 5 : i + 1)),
+  );
+}
+
+function sleeperPayloads(overrides = {}) {
   const dictionary = {};
   const stats = {};
   for (const position of ["QB", "RB", "WR", "TE"]) {
@@ -462,7 +478,7 @@ function sleeper(context, overrides = {}) {
       stats[id] = { rec: i, gp: 1, pts_ppr: 100 - i, pts_half_ppr: 80 - i, pts_std: 60 - i, nullable_stat: null };
     }
   }
-  const payloads = {
+  return {
     "league/123": { league_id: "123", sport: "nfl", season: "2026", total_rosters: 10, scoring_settings: { rec: 1, rush_yd: 0.1 } },
     "state/nfl": { season: "2026", season_type: "regular", week: 3 },
     "league/123/users": Array.from({ length: 10 }, (_, i) => ({ user_id: String(i), display_name: `Owner ${i}`, metadata: null })),
@@ -470,8 +486,13 @@ function sleeper(context, overrides = {}) {
     "players/nfl": dictionary,
     "stats/nfl/regular/2026": stats,
     "stats/nfl/regular/2025": stats,
+    "/schedule/nfl/regular/2026": scheduleFixture(),
     ...overrides,
   };
+}
+
+function sleeper(context, overrides = {}) {
+  const payloads = sleeperPayloads(overrides);
   const calls = [];
   mockFetch(context, async (input, init) => {
     const endpoint = new URL(input).pathname.replace("/v1/", "");
@@ -549,6 +570,108 @@ test("Sleeper explicit previous-season totals keep game setup season/week distin
   assert.match(result.source, /2025 previous-season/);
   assert.match(result.source, /2026 week 1/);
   assert.equal(service.calls.filter(call => call.endpoint.startsWith("stats/")).length, 1);
+  assert.ok(service.calls.some(call => call.endpoint === "/schedule/nfl/regular/2026"));
+  assert.ok(!service.calls.some(call => call.endpoint.includes("schedule") && call.endpoint.includes("2025")));
+});
+
+test("Sleeper flags assignment-week byes independently of cumulative stats and injuries", async context => {
+  const dictionary = {};
+  for (const position of ["QB", "RB", "WR"]) {
+    for (let i = 0; i < 35; i++) {
+      dictionary[`${position}-${i}`] = {
+        full_name: `${position} Player ${i}`, position, team: i < 2 ? "KC" : "TEAM0",
+        injury_status: i === 0 ? "Questionable" : null,
+      };
+    }
+  }
+  const service = sleeper(context, { "players/nfl": dictionary });
+  const result = await (await requestSleeper(service.route, query.replace("week=3", "week=5"))).json();
+  assert.equal(result.week, 5);
+  assert.equal(result.players[0].bye, true);
+  assert.equal(result.players[0].injury, "Questionable");
+  assert.equal(result.players[1].bye, true, "healthy players are flagged too");
+  assert.equal(result.players[2].bye, false);
+  const load = loader();
+  const { transition, pool } = load("src/lib/game.ts");
+  const imported = transition(load("src/lib/seed.ts").initialState(), { type: "import", ...result }, () => 0);
+  for (const position of ["QB", "RB", "WR"]) {
+    assert.equal(pool(imported, position).length, 10);
+    assert.equal(pool(imported, position)[0].id, `${position}-2`);
+  }
+  const otherWeek = await (await requestSleeper(service.route)).json();
+  assert.ok(otherWeek.players.every(player => !player.bye));
+  assert.equal(otherWeek.players[0].points, result.players[0].points);
+});
+
+test("Sleeper rejects unavailable, partial and malformed schedules rather than guessing byes", async context => {
+  for (const schedule of [
+    [], scheduleFixture().filter(game => game.week !== 3),
+    [{ week: 5, home: null, away: "KC" }],
+    new Response("unavailable", { status: 503 }),
+  ]) {
+    const service = sleeper(context, { "/schedule/nfl/regular/2026": schedule });
+    const response = await requestSleeper(service.route);
+    assert.equal(response.status, 502);
+    assert.ok((await response.json()).error);
+  }
+});
+
+function badByeAssignment(state) {
+  state.week = 5;
+  state.leagueId = "123";
+  state.locked = ["QB"];
+  state.assignments = [{
+    id: "bad-bye", season: state.season, week: state.week,
+    player: { ...state.players[0], id: "12345", position: "QB", team: "KC" },
+    manager: state.managers[0], applied: true, dropped: false,
+  }];
+  return state.assignments[0];
+}
+
+test("commissioner correction verifies legacy bye awards and preserves history under CAS", async context => {
+  const db = database(context, { sleeperPayloads: sleeperPayloads() });
+  const original = structuredClone(badByeAssignment(db.row().state));
+  const command = { type: "replace-bye-assignment", id: original.id, confirmRemoved: true };
+  const body = { type: "command", roomId, version: 0, command };
+  assert.equal((await db.route.POST(post(body, "other-token"))).status, 403);
+  assert.ok(!db.calls.some(call => call.url.hostname === "api.sleeper.app"));
+  const response = await db.route.POST(post(body));
+  assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+  const { state } = await response.json();
+  assert.equal(state.assignments[0].player.id, original.player.id);
+  assert.equal(state.assignments[0].applied, true);
+  assert.equal(state.assignments[1].player.id, "QB-34");
+  assert.deepEqual(state.assignments[1].manager, original.manager);
+  assert.equal(state.assignments[1].applied, false);
+  assert.equal(state.assignments[1].replacesAssignmentId, original.id);
+  assert.deepEqual(state.locked, ["QB"]);
+  assert.equal(db.row().version, 1);
+  assert.equal((await db.route.POST(post(body))).status, 409);
+});
+
+test("connected bye corrections require fresh absence in every roster slot even with a client confirmation", async context => {
+  const liveRoomId = "69103cd4-0f84-4ce1-b9d1-dfb3096771bc";
+  const rosters = Array.from({ length: 10 }, (_, i) => ({
+    roster_id: i + 1, owner_id: String(i), players: [], reserve: [], taxi: [],
+  }));
+  const payloads = sleeperPayloads({ "league/123/rosters": rosters });
+  const db = database(context, { roomId: liveRoomId, sleeperPayloads: payloads });
+  const original = badByeAssignment(db.row().state);
+  const body = { type: "command", roomId: liveRoomId, version: 0,
+    command: { type: "replace-bye-assignment", id: original.id, confirmRemoved: true } };
+  for (const slot of ["players", "reserve", "taxi"]) {
+    rosters[9][slot] = [original.player.id];
+    const response = await db.route.POST(post(body));
+    assert.equal(response.status, 422);
+    assert.match((await response.json()).error, /Remove the original/);
+    assert.equal(db.row().version, 0);
+    rosters[9][slot] = [];
+  }
+  const response = await db.route.POST(post(body));
+  assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+  const rosterRequests = db.calls.filter(call => call.url.pathname.endsWith("/rosters"));
+  assert.ok(rosterRequests.some(call => call.init.next.revalidate === 0));
+  assert.ok(!db.calls.some(call => call.url.pathname.includes("/functions/")), "correction performs no external writes");
 });
 
 test("assignment week does not restrict season statistics; stale fallback seasons remain blocked", async context => {

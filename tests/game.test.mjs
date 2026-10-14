@@ -66,6 +66,127 @@ test("nine spins make ten unique player-manager pairs per position", () => {
   assert.equal(currentAssignments(game.state).length, 11);
 });
 
+test("bye flags persist, automatically refill pools, and cannot be manually included or assigned", () => {
+  const state = initialState();
+  const players = structuredClone(state.players);
+  const first = pool(state, "QB")[0];
+  players.find(player => player.id === first.id).bye = true;
+  let imported = transition(state, {
+    type: "import", players, season: state.season, week: state.week,
+    leagueId: state.leagueId, managers: state.managers, source: "Sleeper",
+  }, () => 0, 0);
+  assert.ok(imported.excluded.includes(first.id));
+  assert.equal(pool(imported, "QB").length, 10);
+  assert.ok(!pool(imported, "QB").some(player => player.id === first.id));
+  imported = stateSchema.parse(JSON.parse(JSON.stringify(imported)));
+  assert.equal(imported.players.find(player => player.id === first.id).bye, true);
+  assert.throws(() => transition(imported, { type: "exclude", playerId: first.id }, () => 0), /bye week/);
+  imported.excluded = [];
+  assert.ok(!pool(imported, "QB").some(player => player.id === first.id), "pool protects against missing exclusions");
+  imported = transition(imported, { type: "lock", position: "QB" }, () => 0, 0);
+  for (let i = 0; i < 9; i++) imported = transition(imported, { type: "assign", position: "QB" }, () => 0, (i + 1) * 10000);
+  assert.equal(currentAssignments(imported, "QB").length, 10);
+  assert.ok(currentAssignments(imported, "QB").every(assignment => !assignment.player.bye));
+  const next = transition(imported, { type: "next-week" }, () => 0, 110000);
+  const refreshed = transition(next, {
+    type: "import", players: players.map(player => ({ ...player, bye: false })),
+    season: next.season, week: next.week, leagueId: next.leagueId,
+    managers: next.managers, source: "Sleeper",
+  }, () => 0, 120000);
+  assert.ok(pool(refreshed, "QB").some(player => player.id === first.id));
+  assert.deepEqual(refreshed.assignments, imported.assignments);
+});
+
+test("retroactive bye correction keeps the manager, audit and round progress without an extra spin", () => {
+  const state = initialState();
+  const first = pool(state, "QB")[0];
+  state.week = 5;
+  state.locked = ["QB"];
+  state.assignments = [{ id: "bad-award", season: state.season, week: 5,
+    player: first, manager: state.managers[0], nickname: "Original nickname", applied: true, dropped: false }];
+  state.pending = { duration: "Weekly", ruleId: null };
+  const replacement = { ...pool(state, "QB")[1], injury: null, bye: false, team: "PLAYING" };
+  state.nicknames = { [replacement.id]: "Replacement nickname" };
+  const evidence = {
+    byeTeams: [first.team], originalAbsent: true,
+    players: [
+      { ...replacement, id: "injured", points: 9999, injury: "Out" },
+      { ...replacement, id: "bye", points: 9998, bye: true },
+      { ...replacement, id: "manual", points: 9997 },
+      replacement,
+    ],
+  };
+  state.excluded = ["manual"];
+  const original = structuredClone(state);
+  const repaired = transition(state, { type: "replace-bye-assignment", id: "bad-award", confirmRemoved: false },
+    () => { throw new Error("Correction must not spin"); }, 12345, evidence);
+  assert.deepEqual(state, original);
+  assert.equal(repaired.assignments.length, 2);
+  const old = repaired.assignments[0], next = repaired.assignments[1];
+  assert.equal(old.replacedByAssignmentId, next.id);
+  assert.equal(old.replacedAt, 12345);
+  assert.equal(old.applied, true);
+  assert.equal(old.dropped, true);
+  assert.deepEqual(old.player, first);
+  assert.equal(old.nickname, "Original nickname");
+  assert.equal(next.player.id, replacement.id);
+  assert.equal(next.replacesAssignmentId, old.id);
+  assert.deepEqual(next.manager, old.manager);
+  assert.equal(next.nickname, "Replacement nickname");
+  assert.equal(next.applied, false);
+  assert.equal(next.dropped, false);
+  assert.deepEqual(currentAssignments(repaired, "QB"), [next]);
+  assert.deepEqual(repaired.locked, state.locked);
+  assert.deepEqual(repaired.pending, state.pending);
+  assert.deepEqual(repaired.lastSpin, state.lastSpin);
+  assert.ok(repaired.excluded.includes(first.id));
+  assert.deepEqual(stateSchema.parse(JSON.parse(JSON.stringify(repaired))), repaired);
+  assert.throws(() => transition(repaired, { type: "replace-bye-assignment", id: old.id }, () => 0, 20000, evidence), /unreplaced/);
+  assert.throws(() => transition(repaired, { type: "assignment-status", id: old.id, field: "dropped" }, () => 0), /read-only/);
+});
+
+test("bye corrections reject history, missing evidence, non-byes, missing removal and exhausted reserves", () => {
+  const state = initialState();
+  const player = pool(state, "QB")[0];
+  state.assignments = [{ id: "bad", season: state.season, week: state.week,
+    player, manager: state.managers[0], applied: true, dropped: false }];
+  const command = { type: "replace-bye-assignment", id: "bad", confirmRemoved: false };
+  const replacement = { ...player, id: "replacement", team: "PLAYING", injury: null };
+  const evidence = { players: [replacement], byeTeams: [player.team] };
+  assert.throws(() => transition(state, command, () => 0), /Verify/);
+  assert.throws(() => transition(state, command, () => 0, 10000, { ...evidence, byeTeams: [] }), /not assigned.*bye/);
+  assert.throws(() => transition(state, command, () => 0, 10000, evidence), /Remove the original/);
+  assert.throws(() => transition({ ...state, week: 2 }, command, () => 0, 10000, evidence), /current week/);
+  assert.throws(() => transition(state, command, () => 0, 10000, { ...evidence, originalAbsent: true, players: [player] }), /No eligible/);
+  const repaired = transition(state, { ...command, confirmRemoved: true }, () => 0, 10000, evidence);
+  assert.equal(currentAssignments(repaired)[0].player.id, replacement.id);
+  assert.throws(() => transition({
+    ...state, lastSpin: { id: "spin", startedAt: 9999, options: [], label: "", detail: "", index: 0 },
+  }, command, () => 0, 10000, evidence), /finish/);
+});
+
+test("correcting a completed ten-player pool neither repeats awards nor reopens the scoring round", () => {
+  const game = coordinator();
+  game.run({ type: "lock", position: "QB" });
+  for (let i = 0; i < 9; i++) game.run({ type: "assign", position: "QB" });
+  const state = game.state;
+  const original = state.assignments[0];
+  const reserve = state.players.find(p => p.position === "QB" && !state.assignments.some(a => a.player.id === p.id));
+  const replacement = { ...reserve, team: "PLAYING", injury: null };
+  const now = state.lastSpin.startedAt + spinDurationMs;
+  const corrected = transition(state, { type: "replace-bye-assignment", id: original.id }, () => 0, now, {
+    byeTeams: [original.player.team],
+    players: [...state.assignments.map(a => ({ ...a.player, points: 9999 })), replacement],
+  });
+  const current = currentAssignments(corrected, "QB");
+  assert.equal(current.length, 10);
+  assert.equal(new Set(current.map(a => a.manager.id)).size, 10);
+  assert.equal(new Set(current.map(a => a.player.id)).size, 10);
+  assert.equal(current.at(-1).player.id, reserve.id);
+  const next = transition(corrected, { type: "coin" }, () => 0, now + 10000);
+  assert.equal(next.pending.duration, "Weekly");
+});
+
 test("scoring round enforces assignment completion, order, and replacement points", () => {
   const game = coordinator();
   assert.throws(() => game.run({ type: "coin" }), /Finish/);
